@@ -1,0 +1,105 @@
+// Canvas2D 兜底/调试渲染器：不依赖 WebGL2。
+// 也能用于无 GPU 的环境（如某些 headless 抓帧）。
+
+import { Backend } from './backend.js';
+import { values } from '../core/config.js';
+
+const PALETTE = (() => {
+  // 信息素:暗底 → 蓝 → 金
+  const stops = [
+    [0.00, [6, 16, 40]],
+    [0.10, [20, 60, 120]],
+    [0.30, [60, 130, 210]],
+    [1.00, [255, 200, 80]],
+  ];
+  return stops;
+})();
+
+function mapColor(v, peak) {
+  const t = Math.min(1, Math.max(0, v / peak));
+  let c = [6, 16, 40];
+  for (let i = 0; i < PALETTE.length - 1; i++) {
+    const a = PALETTE[i], b = PALETTE[i + 1];
+    if (t >= a[0] && t <= b[0]) {
+      const k = (t - a[0]) / Math.max(1e-6, b[0] - a[0]);
+      c = a[1].map((ch, j) => ch + (b[1][j] - ch) * k);
+      break;
+    }
+  }
+  return c;
+}
+
+export class Canvas2DBackend extends Backend {
+  init(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.cx = 0; this.cy = 0; this.zoom = 0.5;
+    return !!this.ctx;
+  }
+
+  setCamera(cx, cy, zoom) { this.cx = cx; this.cy = cy; this.zoom = zoom; }
+
+  resize(w, h) {
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const pw = Math.max(1, Math.round(w * this.dpr));
+    const ph = Math.max(1, Math.round(h * this.dpr));
+    if (this.canvas.width !== pw || this.canvas.height !== ph) {
+      this.canvas.width = pw; this.canvas.height = ph;
+    }
+  }
+
+  _initBitmap() {
+    if (!this._img2) this._img2 = document.createElement('canvas');
+  }
+
+  render(view) {
+    const g = this.ctx;
+    this._initBitmap();
+    const { field, foodPatches, nestX, nestY, nestRadius, colony } = view;
+    const w = this.canvas.width, h = this.canvas.height;
+    // 世界→设备像素 = zoom(css px/世界单位) × dpr
+    // 旧版 sx = w/z/field.w 把 1/z 当缩放,与 WebGL 主路径/点击换算不一致,已修正
+    const sx = this.zoom * this.dpr;
+
+    g.fillStyle = '#030409';
+    g.fillRect(0, 0, w, h);
+
+    // ---- 信息素场渲染到离屏 ImageData ----
+    const gw = field.gw, gh = field.gh;
+    if (!this._img || this._img.length !== gw * gh * 4) {
+      this._img = new Uint8ClampedArray(gw * gh * 4);
+      this._idata = new ImageData(this._img, gw, gh);
+    }
+    const img = this._img, src = field.buf, peak = values.peak;
+    for (let i = 0; i < gw * gh; i++) {
+      const col = mapColor(src[i], peak);
+      img[i * 4] = col[0]; img[i * 4 + 1] = col[1]; img[i * 4 + 2] = col[2]; img[i * 4 + 3] = 255;
+    }
+    // 世界到屏幕变换
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    const ox = w / 2 - this.cx * sx, oy = h / 2 - this.cy * sx;
+    g.translate(ox, oy);
+    if (this._img2.width !== gw || this._img2.height !== gh) {
+      this._img2.width = gw; this._img2.height = gh;
+    }
+    this._img2.getContext('2d').putImageData(this._idata, 0, 0);
+    g.drawImage(this._img2, 0, 0, sx * field.w, sx * field.h);
+
+    // ---- 蚂蚁 ----
+    const apx = 2 * this.dpr;
+    for (let i = 0; i < colony.count; i++) {
+      const load = colony.load[i];
+      g.fillStyle = load > 0.5 ? 'rgba(255,210,90,0.9)' : 'rgba(120,190,255,0.85)';
+      g.fillRect(colony.px[i] * sx, colony.py[i] * sx, apx, apx);
+    }
+
+    // ---- 巢 ----
+    g.fillStyle = 'rgba(30,50,80,0.4)';
+    g.beginPath(); g.arc(nestX * sx, nestY * sx, nestRadius * sx, 0, 7); g.fill();
+    g.strokeStyle = 'rgba(140,220,255,0.8)';
+    g.lineWidth = 1.5 * this.dpr;
+    g.beginPath(); g.arc(nestX * sx, nestY * sx, nestRadius * sx, 0, 7); g.stroke();
+  }
+
+  destroy() {}
+}

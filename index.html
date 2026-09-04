@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Antworld · 蚂蚁世界</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #03040a; }
+    #app {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+    }
+    #canvas {
+      flex: 1; display: block; width: 100%; height: 100%;
+      touch-action: none; cursor: crosshair;
+    }
+    #hud {
+      position: fixed; top: 10px; left: 10px;
+      font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+      color: #9fb6c9; background: rgba(6,10,22,0.72);
+      border: 1px solid #1c2a40; padding: 6px 10px;
+      pointer-events: none; white-space: pre; user-select: none;
+      backdrop-filter: blur(2px);
+    }
+    #toast {
+      position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+      font: 12px ui-monospace, Consolas, monospace; color: #cfe3f5;
+      background: rgba(6,10,22,0.85); border: 1px solid #2a3c58;
+      padding: 4px 12px; opacity: 0; transition: opacity .25s; pointer-events: none;
+    }
+    .tp-dfwv { backdrop-filter: none !important; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="canvas"></canvas>
+    <div id="hud"></div>
+    <div id="toast"></div>
+  </div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

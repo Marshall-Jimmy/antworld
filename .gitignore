@@ -1,0 +1,6 @@
+node_modules/
+dist/
+bench-out/
+screenshots/
+server.log
+*.log
