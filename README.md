@@ -39,6 +39,13 @@ npm run build      # 产物在 dist/
   宽度/分叉/强弱全丢; =1(默认)是对数上肩的有界色阶——「色阶参考浓度」那一格=半亮, 其上每
   翻倍亮一档, 256× 才到白热上限, 所以最热的干线和它旁边的支路是两种颜色。同一份场数据前后对比:
   纯白像素 5.71%→0.00%, 觅食网内可辨亮度级数 1→134。HUD 第一行自报「渲染 WebGL2」或「Canvas2D(兜底)」。
+- **个体路线记忆(P2.4)**: 每只空手出门的工蚁把自己的路记成一串航点, 回到巢里卸货时才"提交"成正式路线;
+  闻不到走廊时(夜里蒸发、被雨冲平、被捕食者撕断)改走自己记得的那条, 连续扑空两次就废弃。
+  **最好看的时刻是黎明前**——集体走廊被夜削到百分之一, 开了记忆就不必全群从零重踩。
+  用 `?inspect=N` 跟拍第 N 只蚁: **青色虚线**是它记住的航点链、空心圆是它下一个要奔的点, 读数行给出
+  "几航点 / 多长 / 走到第几点 / 扑空几次", 旁边那条橙色是它这一趟**实际走过的轨迹**——两者在哪里分开,
+  就能在哪里看见"记忆在替信息素做主"。记忆要攒够趟数才成熟, 所以配合 `?food=5000` 管饱(默认那块
+  200 单位食源在千只蚁下十几分钟就被搬空, 那是观察条件不是作弊)。`K_mem=0` 退回纯信息素。
 - 「真实感」组拉 0: 回到整齐划一的程序化蚁群, 对比极明显。
 
 ## 开发
@@ -47,6 +54,9 @@ npm run build      # 产物在 dist/
   `node dead_site_check.mjs` 死点行为 A/B; `node walls_check.mjs` 障碍墙不变量+绕行验收;
   `node predator_check.mjs` 捕食者/报警 A→B→C 验收;
   `node weather_check.mjs` 昼夜/天气四组验收(SUB=identity,storm,antiphase,temp 可分组);
+  `node memory_check.mjs` **个体路线记忆验收**(①恒等 ②稳定单源 ③昼夜三天×三种子 ④撤源废弃 ⑤弱场压平;
+  23 断言 / 全跑约 25 分钟, SUB=identity,stable,night,abandon,weak 可分组)。
+  `node wipe_diag.mjs` 是 P2.4 ③ 段的**破案现场**(三变体诊断台, 记录了假数字 6720× 怎么来的), 非门禁;
   `render_png.mjs`(RENDER_SECS/RENDER_OUT/PARAMS/WALL/PRED, 另有 WX_STORM_AT/WX_JUMP/FOOD) 出验收图;
   `probe_wall.mjs` 墙穿透探针; `weather_diag.mjs`(MODE=phantom|dwell|wave) 昼夜/假家诊断台;
   `node glare_check.mjs` **光污染验收**(同一份场数据新旧色阶逐像素对比; SUB=rich,rich07,rich10,default,rain,alarm;

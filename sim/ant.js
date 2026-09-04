@@ -59,12 +59,15 @@ export function step(
     K_wall = 0,
     K_alarm = 0, alarmSens = 0.02,
   } = params;
+  // 个体路线记忆(P2.4): 目标航点的"份额"与"它自己想拐的量"由 colony 侧算好传进来。
+  // 默认 0/0 = 恒等: 份额 0 时既不加转向也不压场, 所以 K_mem=0 时本模块逐位不变。
 
   let { px, py, theta, hx, hy, load, tumble, lastAsym = 0,
         pauseT = 0, speedMul = 1, turnMul = 1, depMul = 1, forageT = 0, misses = 0,
         wfl = 0, wfm = 0, wfr = 0,
         afl = 0, afm = 0, afr = 0,
-        wallSide = 0 } = state;
+        wallSide = 0,
+        memTurn = 0, memShare = 0 } = state;
 
   // 1. 感知: FL, FR 是原始浓度,先过饱和变成"尝到的量"
   const sl = sense(fl, saturationMode, K_sat);
@@ -102,12 +105,14 @@ export function step(
       else if (sr > sl) steer = -K_steer;
       else steer = (uniform() < 0.5 ? K_steer : -K_steer);
       // A: 没路时不该锁(锁的是空气) —— 置信度调制同样作用于转向(含信任折扣)
-      turn += confA ? steer * confEff : steer;
+      turn += (confA ? steer * confEff : steer) * (1 - memShare * (1 - confEff));
     }
   } else if (!returning) {
     // A: 横向锁定 —— 没路时不该锁(锁的是空气)
-    const chem = K_chem * (sl - sr) * (1 - load);
-    turn += confA ? chem * confEff : chem;
+    let chem = K_chem * (sl - sr) * (1 - load);
+    if (confA) chem *= confEff;
+    chem *= 1 - memShare * (1 - confEff);   // 同上: 双通道按可靠度分份额(P2.4)
+    turn += chem;
   }
 
   // bearing(h): h 本身 = 出发点 − 当前位置 = 回家方向向量，直接取其朝向
@@ -162,6 +167,16 @@ export function step(
     else if (afr - afl > alarmSens) turn += K_alarm;
     else turn += (uniform() < 0.5 ? K_alarm : -K_alarm);
   }
+
+  // 2a'''''. 个体路线记忆(P2.4) · 双通道按可靠度混合:
+  //   场通道的可靠度 = confEff(闻不闻得到路), 记忆通道的可靠度 = memShare(贴线程度×扑空衰减)。
+  //   记忆份额再乘 (1−confEff): **闻得到集体走廊就走路, 闻不到才掏自己的记忆**。这既是真实蚁的
+  //   行为切换(off-trail 转用个体记忆/路径积分), 也是实测逼出来的——第一版让记忆无条件抢方向盘,
+  //   稳定单食源下吞吐反而 40769→37038(−9%): 群体走廊本来就近乎最优, 每条私人弯路去盖它只会更慢。
+  //   份额制下同环境 del=40769→40769 零成本, 而场一弱(夜/雨后/抹场)记忆立刻接管。
+  // 放在 turnMul 之前: 性格(爱扭/走直线)同样作用于自己的路线, 谨慎的蚁连熟路都走不直。
+  const memGain = memShare * (1 - confEff);
+  if (memGain) turn += memGain * memTurn;
 
   // 2b. 个体性格: 固定的转向倍率(大胆的走直线, 谨慎的多抖动)
   turn *= turnMul;

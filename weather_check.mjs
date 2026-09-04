@@ -125,7 +125,11 @@ function check(name, ok, detail) { CHECK.push({ name: name, ok: !!ok, detail: de
 // 三种配置: (a) 两开关全关 (b) 天气全开但 env 处处=恒等 (c) 灵敏度对照:只开昼夜→必须变。
 // P2.3 重定基: 返巢结算改判物理到家后, 空手蚁的导航不再被"假家"劫持 → ants/aborts 变,
 // 负重链(deliveries/timeouts/field)逐位不变。旧值 8314152.3050845265 / aborts 1522 作废(METRICS 记录)。
-const EXPECT = { ants: '8296930.9330737181', field: '285.06957330616132', del: 752, timeouts: 100, aborts: 1552 };
+// P2.4 第 6 次重定基: K_mem 出厂值 0→2(真实蚁本有个体路线记忆, 默认关=宣称这窝蚁没有记忆)。
+// 记忆改变每一步的走位 → ants 校验和变; 但这个布局的宏观账本逐位不变(field/del/timeouts/aborts
+// 全同), 因为单食源+强场下双通道份额制让记忆几乎不抢方向盘(METRICS ②b/③c 的"不伤害"判据)。
+// 恒等逻辑本身仍成立: (a)===(b) 逐位相同见下。旧值 8296930.9330737181 = PARAMS=K_mem=0 的门控对照。
+const EXPECT = { ants: '8297548.1091679782', field: '285.06957330616132', del: 752, timeouts: 100, aborts: 1552 };
 function identityRun(over) {
   useParams(over);
   const STEPS = 3600, WARM = 100, N = 5000;

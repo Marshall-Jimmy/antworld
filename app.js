@@ -41,7 +41,10 @@ function reset() {
   // 默认放一块离巢适当距离的食物，方便一进来就看到成道
   const fx = w * (0.55 + r() * 0.2);
   const fy = h * (0.55 + r() * 0.2);
-  world.addFood(fx, fy, 30, 200);
+  // ?food=<量> 加大开局那块食源(P2.4): 默认 200 单位在千只蚁下十几分钟就被搬空, 而个体路线记忆
+  // 是个要看多日循环的慢变量——食源先没了, 就只能看到路线废弃, 看不到熟路复用。
+  const FOOD0 = Number(new URLSearchParams(location.search).get('food'));
+  world.addFood(fx, fy, 30, FOOD0 > 0 ? FOOD0 : 200);
   stats = { firstFood: null, startT: performance.now(), loadedMax: 0 };
   // 换种子即换天气随机流: 同一个 seed 的风暴排期完全可复现
   weather = new Weather(seed);
@@ -148,9 +151,19 @@ function screenToWorld(sx, sy) {
 // ---------- URL 还原(先于 panel,让绑定反映 URL) ----------
 applyQuery(new URLSearchParams(location.search));
 
+// 只生效一次的调试读数(?food 加大开局食源 / ?inspect 指到某一只蚁)不属于参数面板, 但必须原样带回
+// 新 URL: 否则刷新一次或点"复制分享链接", 花力气摆好的验收视角就没了。
+const PASSTHROUGH = (() => {
+  const known = new Set(SCHEMA.map((d) => d.key));
+  const out = [];
+  for (const [k, v] of new URLSearchParams(location.search)) {
+    if (k !== 'seed' && !known.has(k)) out.push(encodeURIComponent(k) + '=' + encodeURIComponent(v));
+  }
+  return out;
+})();
 function buildHref() {
   const q = toQuery();
-  return location.pathname + '?' + q + (q ? '&' : '') + 'seed=' + seed;
+  return location.pathname + '?' + q + (q ? '&' : '') + PASSTHROUGH.concat('seed=' + seed).join('&');
 }
 function pushUrl() { history.replaceState(null, '', buildHref()); }
 
@@ -190,6 +203,12 @@ const panel = new Panel({
 // ---------- 初始化世界(inspector 已声明,reset 才能挂 colony) ----------
 reset();
 refit();
+// ?inspect=N 直接检视第 N 只蚁(P2.4): 记忆航点链是个慢变量(要等这只蚁真的走完一趟并咬到食物
+// 才提交路线), 手点验收很痛苦; 让 URL 就能指到某一只蚁, 截图验收与分享都方便。非法/越界静默忽略。
+const QRY = new URLSearchParams(location.search);
+// 注意必须先判参数存在: Number(null) 等于 0, 直接 Number() 会把「没带参数」当成「检视 0 号蚁」。
+const INSPECT0 = QRY.get('inspect') === null ? -1 : Number(QRY.get('inspect'));
+if (Number.isInteger(INSPECT0) && INSPECT0 >= 0 && INSPECT0 < colony.count) inspector.select(INSPECT0);
 pushUrl();
 
 // ---------- 输入 ----------

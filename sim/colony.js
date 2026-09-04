@@ -7,6 +7,11 @@
 
 import { step as antStep } from './ant.js';
 
+// 个体路线记忆(P2.4): 每只蚁的个人路线 = 一串航点。32 段 × memStep(默认 24) ≈ 768 世界单位,
+// 覆盖本项目的典型巢–源距离(~290)两倍有余; 记满后丢最旧的半段(靠巢那截最不值钱)。
+export const MEM_WPTS = 32;
+const MEM_DROP = MEM_WPTS >> 1;
+
 export class Colony {
   constructor(count, opts) {
     const { rng, world, nestRadius } = opts;
@@ -30,6 +35,21 @@ export class Colony {
     this.turnMul = new Float32Array(count);
     this.depMul = new Float32Array(count);
     this.wallSide = new Float32Array(count); // P2.2: 个体沿墙侧偏好(±1), 0=未定(见 ant.js 墙避让)
+    // ---- 个体路线记忆(P2.4) SoA: A=已证实的路线(重放用), B=这一趟正在记的(咬到食物才提交成 A) ----
+    // 双缓冲是必需的: 重放 A 的同时必须在记新路线 B, 单缓冲会自我覆盖。5000 蚁 × 32 点 × 2 坐标
+    // × 2 缓冲 = 2.6 MB, 且 K_mem=0 时这些数组根本不读不写(只有构造期分配)。
+    this.memA = new Float32Array(count * MEM_WPTS * 2);
+    this.memB = new Float32Array(count * MEM_WPTS * 2);
+    this.memNA = new Uint8Array(count);   // A 里有效点数
+    this.memNB = new Uint8Array(count);   // B 里有效点数
+    this.memIA = new Uint8Array(count);   // A 的重放指针(走到第几个点)
+    this.memLX = new Float32Array(count); // B 上一个记点的位置(判断"走开一个 memStep 了没")
+    this.memLY = new Float32Array(count);
+    this.memFail = new Float32Array(count); // 这条 A 连续扑空几次(→ 权重线性衰减到废弃)
+    // 路线长度(世界单位): 提交时只认"不比现有路线长"的新路线(P2.4)——真实蚁逐趟把路走短,
+    // 而第一趟找到食物靠的往往是乱走, 不筛就会把弯路焊死成永久路线(实测吞吐反而 −5~9%)。
+    this.memLA = new Float32Array(count);
+    this.memLB = new Float32Array(count);
     this._persInit = false;
     this.deliveries = 0;   // 累加:成功回巢卸货次数
     this.timeouts = 0;     // 累加:迷路弃货次数
@@ -53,7 +73,7 @@ export class Colony {
       const a = Math.max(self._u(), 1e-12);
       return Math.sqrt(-2 * Math.log(a)) * Math.cos(2 * Math.PI * self._u());
     };
-    this._st = { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, pauseT: 0, speedMul: 1, turnMul: 1, depMul: 1, forageT: 0, misses: 0, wfl: 0, wfm: 0, wfr: 0, afl: 0, afm: 0, afr: 0, wallSide: 0 };
+    this._st = { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, pauseT: 0, speedMul: 1, turnMul: 1, depMul: 1, forageT: 0, misses: 0, wfl: 0, wfm: 0, wfr: 0, afl: 0, afm: 0, afr: 0, wallSide: 0, memTurn: 0, memDamp: 1 };
     this._out = { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, deposit: 0, pauseT: 0, forageT: 0, dx: 0, dy: 0, wallSide: 0 };
 
     // 初始化：从巢口随机出生(带 0~2s 错峰停顿——蚁群陆续出门, 不是齐步走的圆环)
@@ -78,6 +98,7 @@ export class Colony {
     const {
       sensorAngle, sensorDist, speed,
       foodLoadRate, carryTimeout, nestRadius, nestDwell, forageTimeout, missRecover,
+      K_mem = 0, memStep = 24, memForget = 2,
     } = params;
 
     let firstFoodAt = -1; // 本步首次吃到食物的蚂蚁索引
@@ -87,6 +108,10 @@ export class Colony {
     // 巢内滞留走生物钟表(P2.3): 只有"环境钟真的走别的速率"时才付这个判定的代价。
     // pauseRate === 1(两开关全关 → env 为 null; 开着的正午晴天恒等于 1)时整块短路, 逐位不变。
     const dwellClock = !!env && env.pauseRate !== 1;
+    // 路线记忆总开关(P2.4): 关掉时下面每一块都短路——不读数组、不写数组、更不掷随机数,
+    // 所以旧行为 bit 级不变(铁律 2/4)。半宽高环面距离用, 提到循环外只算一次。
+    const memOn = K_mem > 0;
+    const hw = world.w / 2, hh = world.h / 2;
 
     // ---- 个体性格惰性初始化(首步时 params 才可用): 从各自 seedNoise 的不相交位段
     // 提取倍率——确定性、且完全不干扰行为随机流; speedVar 等为 0 时恒等于 1(旧行为)。
@@ -160,6 +185,66 @@ export class Colony {
       st.wfl = wfl; st.wfm = wfm; st.wfr = wfr;
       st.afl = afl; st.afm = afm; st.afr = afr;
       st.wallSide = this.wallSide[i];
+      // ---- 个体路线记忆 · 重放(P2.4) ----
+      // 真实蚁群靠"信息素 × 个体路线记忆"双通道导航(ANT_BIOLOGY §二: L. niger 开放场沿线保真
+      // 87.4%; 近期证据: 跟随者对信息素**位置**的记忆能覆盖当下尝到的场强度)。纯信息素模型对
+      // 熟路蚁是过度简化——而且信息素半衰期只有 23s, 一夜蒸发后整张网要靠群体重新踩出来
+      // (HANDOVER §7)。这里给每只蚁一条自己的航点链 A, 空手出门就沿它走。
+      // 数组索引、环面距离、航点推进全在这里算完, ant.js 只收两个标量: memTurn(加进转向)、
+      // memDamp(贴线时把信息素通道压下去)。整块不掷随机数 → 每蚁随机流一个数都不碰。
+      // 负重蚁不重放(它凭航位推算回家, 那才是真实蚁的返程通道); 超时返巢中也不重放。
+      st.memTurn = 0; st.memShare = 0;
+      if (memOn && this.load[i] === 0 && this.memNA[i] > 0 &&
+          !(forageTimeout > 0 && this.forageT[i] > forageTimeout)) {
+        const mbase = i * MEM_WPTS * 2;
+        const mna = this.memNA[i];
+        let mi = this.memIA[i];
+        // 人回到家 = 这根线该从起点重走, 指针必须归零。这一条和上面两条归零(卸货/超时结算)
+        // 不重复: 被内源钟赶回巢里磨蹭的蚁两样结算都不触发, 却带着上一趟停在路线中段的指针
+        // 出门。实测黎明时全群 replay%=99 而 dWp 46→107 —— 蚁在巢里, 目标却在 100 多单位外的
+        // 半路上, onRoute=1−md/reachR 直接归零 ⇒ **记忆在最需要它的时刻是哑的**, 于是黎明群体
+        // 集体空跑 30s 到点弃航(实测一窗弃航 4538 次)、路线被自己扑空计数误删(覆盖率 100→91%)。
+        // 归零必须在"人进巢盘"这一刻做, 不能等结算: 路线是以巢为锚的, 锚点变了整根线就得重数。
+        // 放在归因判定之前不冲突: 弃航结算读的是上一步留下的 memIA, 而返巢途中的蚁根本进不到
+        // 这个分支(forageT 超时的蚁上面已短路), 所以账还是算在正确的趟次上。
+        if (mi > 0) {
+          let ndx = pxi - world.nestX, ndy = pyi - world.nestY;
+          if (ndx > hw) ndx -= world.w; else if (ndx < -hw) ndx += world.w;
+          if (ndy > hh) ndy -= world.h; else if (ndy < -hh) ndy += world.h;
+          if (ndx * ndx + ndy * ndy < nestRadius * nestRadius) { mi = 0; this.memIA[i] = 0; }
+        }
+        const matchR = memStep * 0.75;   // 贴到这么近就算"走完这一点"
+        // 采集半径(贴线判据)——**四倍航点间距**, 不是一倍多。第一版这里是 2×memStep(48 单位),
+        // 后果致命且只在黎明暴露: 一夜蒸发后集体通道没了, 全群本该靠记忆出门, 可蚁一站在巢口
+        // 就发现自己离"下一个航点"有 46~107 单位(巢盘直径 60 > 采集半径 48, 再加上夜里散开的
+        // 位置), onRoute 直接归零 ⇒ 记忆在最需要它的时刻是哑的 ⇒ 群体集体空跑满 30s 到点弃航
+        // (实测一窗弃航 4539 次)、连路线都被自己的扑空计数误删(覆盖率 100→91%), 三天总吞吐
+        // 反而只有基线 0.936×。真实蚁能把自己那条熟路从几十倍体长外**找回来**——记忆的用途恰恰
+        // 是"离线了才要用"。放宽到 4× 后黎明窗翻盘(见 METRICS 验收③)。
+        const reachR = memStep * 4;
+        let mdx = 0, mdy = 0, md = 0;
+        // 向前扫: 允许"从半路重新接上自己的线"(真实蚁会从路线中段接上继续走)
+        while (mi < mna) {
+          mdx = this.memA[mbase + mi * 2] - pxi;
+          mdy = this.memA[mbase + mi * 2 + 1] - pyi;
+          if (mdx > hw) mdx -= world.w; else if (mdx < -hw) mdx += world.w;
+          if (mdy > hh) mdy -= world.h; else if (mdy < -hh) mdy += world.h;
+          md = Math.hypot(mdx, mdy);
+          if (md < matchR) { mi++; continue; }
+          break;
+        }
+        this.memIA[i] = mi;
+        if (mi < mna) {
+          // 记忆的可靠度 = 贴线程度 ×(1 − 扑空衰减)。扑空越多越不信这条线(与 P1.9 的 trust 同构),
+          // 衰减到 0 由超时结算整条废弃。
+          const or0 = 1 - md / reachR;
+          const onRoute = or0 > 0 ? or0 : 0;
+          const forget = this.memFail[i] >= memForget ? 0 : 1 - this.memFail[i] / memForget;
+          const rel = K_mem * forget * onRoute;
+          st.memShare = rel > 1 ? 1 : rel;                      // 这条记忆在总转向里占多大份额
+          st.memTurn = K_mem * Math.sin(Math.atan2(mdy, mdx) - theta);   // 它自己想拐的量
+        }
+      }
       antStep(st, fl, fr, fm, dt, params, gauss, u, out, env);
 
       // ---- 运动阻挡(P2.1): 目标格是墙 → 轴滑动(先保 x 再保 y, 全堵则原地不动)。
@@ -198,6 +283,37 @@ export class Colony {
       this.pauseT[i] = out.pauseT;
       this.forageT[i] = out.forageT;
       this.seedNoise[i] = this._s;
+      // ---- 个体路线记忆 · 记录(P2.4): 空手出门的这一段路记进 B, 每走开一个 memStep 记一点 ----
+      // 停下扫触角时没挪窝, 距离判据自然不成立, 不用特判 paused。
+      if (memOn && this.load[i] === 0 &&
+          !(forageTimeout > 0 && this.forageT[i] > forageTimeout)) {
+        const rbase = i * MEM_WPTS * 2;
+        let rn = this.memNB[i];
+        const cxx = this.px[i], cyy = this.py[i];
+        if (rn === 0) {
+          this.memB[rbase] = cxx; this.memB[rbase + 1] = cyy;
+          this.memLX[i] = cxx; this.memLY[i] = cyy;
+          this.memNB[i] = 1;
+          this.memLB[i] = 0;
+        } else {
+          let rdx = cxx - this.memLX[i], rdy = cyy - this.memLY[i];
+          if (rdx > hw) rdx -= world.w; else if (rdx < -hw) rdx += world.w;
+          if (rdy > hh) rdy -= world.h; else if (rdy < -hh) rdy += world.h;
+          if (rdx * rdx + rdy * rdy >= memStep * memStep) {
+            const rlen = Math.hypot(rdx, rdy);
+            this.memLB[i] += rlen;
+            if (rn >= MEM_WPTS) {
+              // 记满: 丢掉最旧的半段(靠巢那截最不值钱), 保住接近食源的后半
+              this.memB.copyWithin(rbase, rbase + MEM_DROP * 2, rbase + rn * 2);
+              rn -= MEM_DROP;
+            }
+            this.memB[rbase + rn * 2] = cxx;
+            this.memB[rbase + rn * 2 + 1] = cyy;
+            this.memLX[i] = cxx; this.memLY[i] = cyy;
+            this.memNB[i] = rn + 1;
+          }
+        }
+      }
       // 失败信任缓慢回复(每秒恢复 missRecover 次); 全零时零开销
       if (this.misses[i] > 0) {
         const m = this.misses[i] - dt * (missRecover || 0);
@@ -226,6 +342,8 @@ export class Colony {
         this.load[i] = 0; this.carryT[i] = 0;
         this.forageT[i] = 0; this.misses[i] = 0;
         this.wallSide[i] = 0;   // 重生即新蚁: 沿墙偏好重新定侧
+        this.memNA[i] = 0; this.memNB[i] = 0; this.memIA[i] = 0; this.memFail[i] = 0;
+        this.memLA[i] = 0; this.memLB[i] = 0;   // 新蚁没有路线(P2.4)
         this.tumble[i] = 1 + u() * 20;
         this.pauseT[i] = 1 + u();
         this.seedNoise[i] = this._s;
@@ -250,6 +368,43 @@ export class Colony {
           this._loaded++;
           this.forageT[i] = 0;  // 开始搬运,觅食计时清零(P1.9)
           this.misses[i] = 0;   // 成功重置满信任(P1.9)
+          // 路线被证实(P2.4): 这一趟记的 B 提交成 A, 扑空计数清零。少于 2 点不提交
+          // (一步都没走就撞上食物, 那条"路线"没有信息量, 留着旧的 A 更准)。
+          if (memOn) {
+            const nb = this.memNB[i];
+            // 只接受"不比现有路线长"的新路线(留 5% 容差, 免得被一次绕行的噪声卡住不更新)。
+            // 有了这条, 记忆通道才会逐趟收敛到走廊; 没有它, 第一趟的弯路被永久焊死。
+            if (nb >= 2 && (this.memNA[i] === 0 || this.memLB[i] <= this.memLA[i] * 1.05)) {
+              const cbase = i * MEM_WPTS * 2;
+              // 终点钉住"咬到食物的这一刻"(P2.4): 记录只在走满一个 memStep 时才落点, 所以 B 的
+              // 最后一点平均还差半个到一个 memStep 才真到食盘边上。真实蚁的路线记忆是**连着目标物
+              // 位置**的(它记的是"这条路通向那堆东西"), 不补这一下等于每趟都让它"到了附近再自己找"。
+              // 实测: 400 蚁小群(集体通道弱→记忆份额大)下 K_mem=2 吞吐只有基线 86%, 主要就是这段
+              // 未闭合的尾差; 补上后差距收窄(见 METRICS 的验收⑤)。**记满 32 点时不补**, 那种超长
+              // 路线本来就该被淘汰, 不值得为它挪一次数组。
+              let na2 = nb;
+              let la2 = this.memLB[i];
+              if (na2 < MEM_WPTS) {
+                let pdx = this.px[i] - this.memB[cbase + (na2 - 1) * 2];
+                let pdy = this.py[i] - this.memB[cbase + (na2 - 1) * 2 + 1];
+                if (pdx > hw) pdx -= world.w; else if (pdx < -hw) pdx += world.w;
+                if (pdy > hh) pdy -= world.h; else if (pdy < -hh) pdy += world.h;
+                const pd = Math.hypot(pdx, pdy);
+                if (pd > 1) {
+                  this.memB[cbase + na2 * 2] = this.px[i];
+                  this.memB[cbase + na2 * 2 + 1] = this.py[i];
+                  na2++; la2 += pd;
+                }
+              }
+              for (let k = 0; k < na2 * 2; k++) this.memA[cbase + k] = this.memB[cbase + k];
+              this.memNA[i] = na2;
+              this.memLA[i] = la2;
+              this.memIA[i] = 0;
+              this.memFail[i] = 0;
+            }
+            this.memNB[i] = 0;   // 负重段不记路线, 下一趟出门从头记
+            this.memLB[i] = 0;
+          }
         }
         const f = world.foodPatches[fi];
         f.amount -= add;  // 吃食物，食物会逐渐减少
@@ -281,6 +436,7 @@ export class Colony {
           this.forageT[i] = 0;  // 新的一轮觅食计时(P1.9)
           this._loaded--;
           this.deliveries++;
+          if (memOn) { this.memIA[i] = 0; this.memNB[i] = 0; this.memLB[i] = 0; }  // 下一趟从 A 的起点重放(P2.4)
           // 卸货后在巢里磨蹭一会儿再出门(交卸/整理触角); 从该蚁自己的随机流取时长,
           // 所以要把 _s 重新写回 seedNoise。nestDwell=0 时不掷随机数, 旧行为不变。
           if (nestDwell > 0) {
@@ -327,6 +483,29 @@ export class Colony {
           this.forageT[i] = 0;
           this.misses[i] = Math.min(3, this.misses[i] + 1);
           this.aborts++;
+          // 这趟空手而归(P2.4): 路线记一次失败, 权重按 memForget 线性衰减; 衰减到底就把 A
+          // 整条丢掉, 退回纯信息素探索。真实蚁对固定路线的忠诚是有代价的——食物被搬走、
+          // 路被切断时它们会改线, 而不是走到死。
+          if (memOn) {
+            this.memNB[i] = 0; this.memLB[i] = 0;   // 这趟失败的 excursion 不提交
+            // **归因**: 只有把这根线走到大半仍然扑空, 才算路线的错。夜里/低温下蚂蚁根本没走出
+            // 巢盘就被内源钟催回去, 那是身体的失败不是地图的失败。第一版无差别记账, 一个 120s
+            // 长的夜晚(forageTimeout 只有 30s, 一夜能刷 4 次"扑空")把整群记忆清零,
+            // 于是第三天清晨记忆组吞吐归 0(实测)——恰好把这条机制想解决的问题自己又制造了一遍。
+            if (this.memIA[i] >= this.memNA[i] * 0.6) {
+              const f = this.memFail[i] + 1;
+              if (f >= memForget) { this.memNA[i] = 0; this.memIA[i] = 0; this.memFail[i] = 0; }
+              else this.memFail[i] = f;
+            }
+            // 指针归零: 这条线下一趟得从**巢这一头**重走。漏掉这一行是验收 ③b 首跑 FAIL 的真凶——
+            // 夜里扑空的蚁带着停在路线尾部的 memIA 回家, 第二天出门时"向前扫"直接从末尾接上,
+            // 于是目标航点在 220 单位之外 ⇒ onRoute=0 ⇒ 整个群体的记忆被**静默解除**(诊断台实测
+            // dWp 40→103、exh 0%→24%), 黎明吞吐逐日崩塌 9796→3950→559。同一个指针还被上面的归因
+            // 读, 所以它一旦变脏, 连"这次扑空该不该算在路线头上"都会算错(覆盖率被误砍到 87%)。
+            // 到家 = 一趟走完, 与"卸货即归零"是同一条规则: 只有真的回到家才重置;半路弃货不归零,
+            // 那才保留得住"从路线中段重新接上"的能力(真实蚁回找熟路就是这么走的)。
+            this.memIA[i] = 0;
+          }
           if (nestDwell > 0) {
             this.pauseT[i] = nestDwell * (0.5 + u());
             // 时长只给基准: "夜里/雨中宅巢、雨前抢收涌出"改由上面的走表速率实现。旧写法在这
