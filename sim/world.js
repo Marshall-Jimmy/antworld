@@ -9,7 +9,7 @@ const LINEAR_MAX = 16;   // patch 数 ≤ 此值走线性扫描
 const CELL = 160;        // 索引格子边长(世界单位),≥2×最大 radius 时查询只需 3×3 桶
 
 export class World {
-  constructor(w, h) {
+  constructor(w, h, cell = 8) {
     this.w = w;
     this.h = h;
     this.foodPatches = [];   // { x, y, radius, amount }
@@ -17,6 +17,16 @@ export class World {
     this.nestY = h / 2;
     this._idx = null;        // 均匀网格: Map<cellKey, number[]> → patch 索引
     this._idxDirty = true;
+
+    // ---- 障碍墙(P2.1): 与信息素场同分辨率的 Uint8 网格, 惰性分配 ----
+    // cell 建议传 field.cellSize(app.js 传 gridCell), 场扩散掩码/渲染直接对齐。
+    // wallCount===0 时所有墙查询/阻挡/掩码全部短路——旧行为 bit 级不变。
+    this.cell = cell;
+    this.gw = Math.ceil(w / cell);
+    this.gh = Math.ceil(h / cell);
+    this.walls = null;       // Uint8Array(gw*gh), 1=墙
+    this.wallCount = 0;      // 墙格总数(>0 才启用墙逻辑)
+    this.wallVersion = 0;    // 每次墙变化 +1(渲染缓存失效用)
   }
 
   addFood(x, y, radius, amount) {
@@ -94,6 +104,59 @@ export class World {
     const i = this.foodAt(px, py);
     if (i >= 0) this.removeFood(i);
     return i >= 0;
+  }
+
+  // ---- 障碍墙(P2.1) ----
+  // 圆刷子涂/擦墙: 覆盖 (wx,wy) 半径 radius 圆内的格心格。环面距离——贴边画的墙
+  // 在对侧同样生效, 不留 seam 缺口(世界是环面, 信息素/蚂蚁都在环绕)。
+  paintWall(wx, wy, radius, on) {
+    this._ensureWalls();
+    const walls = this.walls, gw = this.gw, gh = this.gh, cell = this.cell;
+    const W = this.w, H = this.h;
+    const g0 = Math.floor((wx - radius) / cell), g1 = Math.floor((wx + radius) / cell);
+    const h0 = Math.floor((wy - radius) / cell), h1 = Math.floor((wy + radius) / cell);
+    const r2 = radius * radius;
+    let changed = false;
+    for (let gy = h0; gy <= h1; gy++) {
+      const cy = (gy + 0.5) * cell;
+      let dy = cy - wy;
+      if (dy > H / 2) dy -= H; else if (dy < -H / 2) dy += H;
+      for (let gx = g0; gx <= g1; gx++) {
+        const cx = (gx + 0.5) * cell;
+        let dx = cx - wx;
+        if (dx > W / 2) dx -= W; else if (dx < -W / 2) dx += W;
+        if (dx * dx + dy * dy > r2) continue;
+        const ix = ((gx % gw) + gw) % gw;
+        const iy = ((gy % gh) + gh) % gh;
+        const k = iy * gw + ix;
+        if (on) {
+          if (!walls[k]) { walls[k] = 1; this.wallCount++; changed = true; }
+        } else if (walls[k]) {
+          walls[k] = 0; this.wallCount--; changed = true;
+        }
+      }
+    }
+    if (changed) this.wallVersion++;
+  }
+
+  clearWalls() {
+    if (!this.walls || this.wallCount === 0) return;
+    this.walls.fill(0);
+    this.wallCount = 0;
+    this.wallVersion++;
+  }
+
+  // (wx,wy) 处是否是墙: 1=是, 0=否。无墙时 O(1) 短路。坐标可为任意实数(环面取模)。
+  wallAt(wx, wy) {
+    if (this.wallCount === 0) return 0;
+    const gw = this.gw, gh = this.gh, cell = this.cell;
+    const ix = ((Math.floor(wx / cell) % gw) + gw) % gw;
+    const iy = ((Math.floor(wy / cell) % gh) + gh) % gh;
+    return this.walls[iy * gw + ix];
+  }
+
+  _ensureWalls() {
+    if (!this.walls) this.walls = new Uint8Array(this.gw * this.gh);
   }
 
   clear() {

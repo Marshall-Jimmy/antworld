@@ -67,7 +67,10 @@ export class Field {
   // new = (1-dw)*old + dw*blurred, 然后 *= decay
   // 热路径优化：内部列直接用 x±1 索引（无 modulo），只有行边界和列边界走 wrap；
   // 算术顺序与朴素版完全一致，保证 bit 级复现。要求 gw>=2（schema 下界 400/24≫2）。
-  step(dw, decay) {
+  // walls(P2.1): 可选墙掩码(Uint8Array, 与本场同 gw×gh)。扩散后把墙格清零——
+  // 信息素渗不进墙体, 墙格恒 0 也保证下一步从墙内扩散出的贡献为 0(不透墙)。
+  // walls 为空时零开销(热路径不变, no-wall bit 级一致)。
+  step(dw, decay, walls) {
     const gw = this.gw, gh = this.gh;
     const src = this.buf;
     const dst = this._tmp;
@@ -111,6 +114,12 @@ export class Field {
           src[yp1 + xm] * 1 + src[yp1 + x] * 2 + src[yp1] * 1;
         dst[y0 + x] = (inv * c + dw16 * blur) * decay;
       }
+    }
+
+    // P2.1: 墙格清零(扩散写进墙体的值直接丢弃)。掩码尺寸不符时静默忽略(防御,
+    // world.cell 与 field.cellSize 应由调用方保证一致)。
+    if (walls && walls.length === this.len) {
+      for (let i = 0; i < this.len; i++) if (walls[i]) dst[i] = 0;
     }
 
     // 交换

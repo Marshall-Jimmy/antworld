@@ -23,6 +23,7 @@ export const SCHEMA = [
   { key: 'K_chem',     default: 1.6, min: 0, max: 10, step: 0.05, desc: '沿信息素梯度转向的增益(空手时)' },
   { key: 'K_home',     default: 3.4, min: 0, max: 10, step: 0.05, desc: '沿回家向量转向的增益(负重时)' },
   { key: 'K_out',      default: 0,   min: 0, max: 10, step: 0.05, desc: '出巢极性:空手蚂蚁被推着向外走(K_home的反向项)' },
+  { key: 'K_wall',     default: 4.0, min: 0, max: 10, step: 0.1,  desc: '避墙转向速率(rad/s):触角碰到障碍墙就转开,0=不避让(仍会被墙挡住)' },
   { key: 'sigma',      default: 0.30,min: 0, max: 3,  step: 0.01, desc: '底层混沌:叠加在转向上,积分出方向惯性' },
   { key: 'tumbleAmp',  default: 2.4, min: 0, max: 8,  step: 0.1,  desc: '翻滚时的一次性大转向幅度' },
   { key: 'alpha',      default: 1.7, min: 0.9, max: 3, step: 0.02, desc: 'Lévy 重尾指数:越小尾巴越重,偶发大转向越多' },

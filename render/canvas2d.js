@@ -85,6 +85,20 @@ export class Canvas2DBackend extends Backend {
     this._img2.getContext('2d').putImageData(this._idata, 0, 0);
     g.drawImage(this._img2, 0, 0, sx * field.w, sx * field.h);
 
+    // ---- 障碍墙(P2.1) ----
+    if (view.walls && view.walls.count > 0) {
+      const { buf, gw, gh, cell } = view.walls;
+      g.fillStyle = '#46505f';
+      const px = cell * sx;
+      for (let iy = 0; iy < gh; iy++) {
+        for (let ix = 0; ix < gw; ix++) {
+          if (buf[iy * gw + ix]) {
+            g.fillRect(ix * px, iy * px, px + 0.5, px + 0.5);  // +0.5 盖住格间缝
+          }
+        }
+      }
+    }
+
     // ---- 蚂蚁 ----
     const apx = 2 * this.dpr;
     for (let i = 0; i < colony.count; i++) {

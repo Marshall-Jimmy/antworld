@@ -23,14 +23,23 @@ if (process.env.PARAMS) {
 }
 const r = rng(hashSeed(seed));
 const w = values.worldW, h = values.worldH;
-const world = new World(w, h);
+const world = new World(w, h, values.gridCell);
 const field = new Field(w, h, values.gridCell);
 const fx = w * 0.62, fy = h * 0.62;
 world.addFood(fx, fy, 30, 200);
+// WALL=bar → 在巢(中心)与食物之间立一道竖墙, 顶部留 22% 高的缺口(验收绕行画面)
+if (process.env.WALL === 'bar') {
+  const wx = w * 0.56;
+  for (let y = 0; y <= h; y += 6) {
+    if (y > h * 0.08 && y < h * 0.30) continue;   // 缺口
+    world.paintWall(wx, y, 14, true);
+  }
+}
 const colony = new Colony(values.antCount, { rng: r, world, nestRadius: values.nestRadius });
 const dt = 1 / 60;
 for (let t = 0; t < SIM_T * 60; t++) {
-  field.step(values.diffuseWeight, Math.pow(values.decayRate, dt));
+  field.step(values.diffuseWeight, Math.pow(values.decayRate, dt),
+             world.wallCount > 0 ? world.walls : null);
   colony.step(field, world, values, dt);
 }
 
@@ -77,6 +86,22 @@ for (let gy = 0; gy < field.gh; gy++) {
 }
 function smooth(x, a, b) { return Math.min(1, Math.max(0, (x - a) / (b - a))); }
 
+// 障碍墙(P2.1): 板岩色实心块, 盖在场色之上、蚂蚁之下
+if (world.wallCount > 0) {
+  const psz = world.cell * SCALE;
+  for (let iy = 0; iy < world.gh; iy++) {
+    for (let ix = 0; ix < world.gw; ix++) {
+      if (!world.walls[iy * world.gw + ix]) continue;
+      const cx = (ix + 0.5) * world.cell, cy = (iy + 0.5) * world.cell;
+      for (let dy = 0; dy < psz; dy++) {
+        for (let dx = 0; dx < psz; dx++) {
+          px(cx - world.cell / 2 + dx / SCALE, cy - world.cell / 2 + dy / SCALE, [70, 80, 95], 255);
+        }
+      }
+    }
+  }
+}
+
 // 巢
 for (let a = 0; a < 6.28; a += 0.01) {
   px(world.nestX + Math.cos(a) * values.nestRadius, world.nestY + Math.sin(a) * values.nestRadius, [120, 210, 255]);
@@ -99,4 +124,4 @@ for (let i = 0; i < colony.count; i++) {
 mkdirSync('screenshots', { recursive: true });
 writeFileSync(`screenshots/${OUT_NAME}`, PNG.sync.write(png));
 console.log('已写出 screenshots/' + OUT_NAME, W + 'x' + H);
-console.log(`卸货=${colony.deliveries} 弃货=${colony.timeouts} 空手返巢=${colony.aborts} 信息素峰值=${Math.max(...field.buf).toFixed(3)}`);
+console.log(`卸货=${colony.deliveries} 弃货=${colony.timeouts} 空手返巢=${colony.aborts} 墙格=${world.wallCount} 信息素峰值=${Math.max(...field.buf).toFixed(3)}`);

@@ -49,8 +49,8 @@ export class Colony {
       const a = Math.max(self._u(), 1e-12);
       return Math.sqrt(-2 * Math.log(a)) * Math.cos(2 * Math.PI * self._u());
     };
-    this._st = { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, pauseT: 0, speedMul: 1, turnMul: 1, depMul: 1, forageT: 0, misses: 0 };
-    this._out = { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, deposit: 0, pauseT: 0, forageT: 0 };
+    this._st = { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, pauseT: 0, speedMul: 1, turnMul: 1, depMul: 1, forageT: 0, misses: 0, wfl: 0, wfm: 0, wfr: 0 };
+    this._out = { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, deposit: 0, pauseT: 0, forageT: 0, dx: 0, dy: 0 };
 
     // 初始化：从巢口随机出生(带 0~2s 错峰停顿——蚁群陆续出门, 不是齐步走的圆环)
     for (let i = 0; i < count; i++) {
@@ -76,6 +76,7 @@ export class Colony {
     let firstFoodAt = -1; // 本步首次吃到食物的蚂蚁索引
     const st = this._st, out = this._out, u = this._u, gauss = this._gauss;
     const physarum = params.sensorMode === 'physarum'; // P1.8: 三触角模式需额外采样前触角
+    const wallOn = world.wallCount > 0;                // P2.1: 有墙才启用墙感知/阻挡(零开销门控)
 
     // ---- 个体性格惰性初始化(首步时 params 才可用): 从各自 seedNoise 的不相交位段
     // 提取倍率——确定性、且完全不干扰行为随机流; speedVar 等为 0 时恒等于 1(旧行为)。
@@ -95,15 +96,28 @@ export class Colony {
       this._s = this.seedNoise[i] | 0;
 
       // ---- 1.感知(内联 sensorPoints,避免临时对象) ----
+      // 坐标先落变量(表达式与旧版逐字一致, 值不变)——墙感知(P2.1)复用同三个触角点
       const pxi = this.px[i], pyi = this.py[i];
       const theta = this.theta[i];
       const left = theta + sensorAngle, right = theta - sensorAngle;
-      const fl = field.sample(pxi + Math.cos(left) * sensorDist, pyi + Math.sin(left) * sensorDist);
-      const fr = field.sample(pxi + Math.cos(right) * sensorDist, pyi + Math.sin(right) * sensorDist);
+      const flx = pxi + Math.cos(left) * sensorDist, fly = pyi + Math.sin(left) * sensorDist;
+      const fl = field.sample(flx, fly);
+      const frx = pxi + Math.cos(right) * sensorDist, fry = pyi + Math.sin(right) * sensorDist;
+      const fr = field.sample(frx, fry);
       // 前触角: 仅 physarum 模式采样(diff 模式零开销)
-      const fm = physarum
-        ? field.sample(pxi + Math.cos(theta) * sensorDist, pyi + Math.sin(theta) * sensorDist)
-        : 0;
+      let fm = 0, fmx = 0, fmy = 0;
+      if (physarum) {
+        fmx = pxi + Math.cos(theta) * sensorDist;
+        fmy = pyi + Math.sin(theta) * sensorDist;
+        fm = field.sample(fmx, fmy);
+      }
+      // 墙感知(P2.1): 三触角各查一次墙格(有墙才查, 无墙 wfl/wfm/wfr 恒 0)
+      let wfl = 0, wfm = 0, wfr = 0;
+      if (wallOn) {
+        wfl = world.wallAt(flx, fly);
+        wfr = world.wallAt(frx, fry);
+        if (physarum) wfm = world.wallAt(fmx, fmy);
+      }
 
       // ---- ant.step 纯函数推进(复用 state/out 槽) ----
       st.px = pxi; st.py = pyi; st.theta = theta;
@@ -114,14 +128,38 @@ export class Colony {
       st.speedMul = this.speedMul[i]; st.turnMul = this.turnMul[i]; st.depMul = this.depMul[i];
       st.forageT = this.forageT[i];
       st.misses = this.misses[i];
+      st.wfl = wfl; st.wfm = wfm; st.wfr = wfr;
       antStep(st, fl, fr, fm, dt, params, gauss, u, out);
 
+      // ---- 运动阻挡(P2.1): 目标格是墙 → 轴滑动(先保 x 再保 y, 全堵则原地不动)。
+      // 起点已在墙内(玩家把墙画到蚂蚁身上)时不阻挡, 放它自己走出墙。
+      // 实际位移 ≠ 意图位移时校正航位推算——路径积分只记真正走过的路。
+      // 注意: 判定必须用"存储等价坐标" fx/fy ——写回是先 toroidal wrap 再存 Float32,
+      // float64 的 nx 贴着格边(如 1223.99997)经舍入会跨进墙列; 判定坐标与最终
+      // 存储坐标不一致就会出现"判定放行、落点在墙"的刀边穿透。
+      let nx = out.px, ny = out.py;
+      if (wallOn) {
+        const fx = Math.fround((nx + world.w) % world.w);
+        const fy = Math.fround((ny + world.h) % world.h);
+        if (world.wallAt(st.px, st.py) === 0 && world.wallAt(fx, fy)) {
+          if (!world.wallAt(fx, st.py)) ny = st.py;
+          else if (!world.wallAt(st.px, fy)) nx = st.px;
+          else { nx = st.px; ny = st.py; }
+        }
+      }
+
       // 写回 + toroidal 边界
-      this.px[i] = (out.px + world.w) % world.w;
-      this.py[i] = (out.py + world.h) % world.h;
+      this.px[i] = (nx + world.w) % world.w;
+      this.py[i] = (ny + world.h) % world.h;
       this.theta[i] = out.theta;
-      this.hx[i] = out.hx;
-      this.hy[i] = out.hy;
+      if (nx !== out.px || ny !== out.py) {
+        // 被墙挡掉了一部分位移: h = 出发点 − 实际走过的每一步(out.hx 已减意图位移)
+        this.hx[i] = out.hx - (nx - st.px) + out.dx;
+        this.hy[i] = out.hy - (ny - st.py) + out.dy;
+      } else {
+        this.hx[i] = out.hx;
+        this.hy[i] = out.hy;
+      }
       this.load[i] = out.load;
       this.tumble[i] = out.tumble;
       this.lastAsym[i] = out.lastAsym;

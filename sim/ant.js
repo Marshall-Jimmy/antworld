@@ -3,10 +3,11 @@
 // 输出：新状态 + 沉积量（信息素）。
 
 // 输入状态：{ px, py, theta, hx, hy, load, tumble, seedNoise,
-//             pauseT = 0, speedMul = 1, turnMul = 1, depMul = 1, forageT = 0, misses = 0 }
+//             pauseT = 0, speedMul = 1, turnMul = 1, depMul = 1, forageT = 0, misses = 0,
+//             wfl/wfm/wfr = 0 (三触角撞墙标志, P2.1) }
 // 参数：{ sensorAngle, sensorDist, K_chem, K_home, K_out, sigma, tumbleAmp, alpha,
 //         speed, leak, depositRate, saturationMode, K_sat, emptyDeposit,
-//         sensorMode, K_steer, K_conf...(P1.7),
+//         sensorMode, K_steer, K_conf...(P1.7), K_wall(P2.1),
 //         pauseRate, pauseTime, forageTimeout(P1.9) }
 // gauss() → 标准正态分布采样
 // uniform() → [0,1)均匀分布
@@ -47,10 +48,12 @@ export function step(
     K_conf, sigma_lost, sigma_road, cautionSpeed, K_return,
     confA, confB, confC, confD,
     pauseRate = 0, pauseTime = 0, forageTimeout = 0,
+    K_wall = 0,
   } = params;
 
   let { px, py, theta, hx, hy, load, tumble, lastAsym = 0,
-        pauseT = 0, speedMul = 1, turnMul = 1, depMul = 1, forageT = 0, misses = 0 } = state;
+        pauseT = 0, speedMul = 1, turnMul = 1, depMul = 1, forageT = 0, misses = 0,
+        wfl = 0, wfm = 0, wfr = 0 } = state;
 
   // 1. 感知: FL, FR 是原始浓度,先过饱和变成"尝到的量"
   const sl = sense(fl, saturationMode, K_sat);
@@ -115,6 +118,18 @@ export function step(
   // D: 丢路时朝"最后闻到路的一侧"回环搜索(默认关)
   if (confD) turn += K_return * lastAsym * (1 - confEff);
 
+  // 2a'. 墙避让(P2.1): 触角撞墙就转开——左墙→右转, 右墙→左转, 只有正前墙→掷硬币选
+  // 一侧; 双侧都堵(窄缝/夹道)时不干预, 让蚂蚁直线过缝(运动阻挡兜底)。
+  // K_wall=0 或没墙(三标志全 0, colony 侧短路)时本块不触发、不消耗随机数——
+  // no-wall 行为 bit 级不变。
+  if (K_wall > 0 && (wfl || wfm || wfr)) {
+    let ws = 0;
+    if (wfl && !wfr) ws = -K_wall;
+    else if (wfr && !wfl) ws = K_wall;
+    else if (wfm) ws = (uniform() < 0.5 ? K_wall : -K_wall);
+    if (ws) turn += ws;
+  }
+
   // 2b. 个体性格: 固定的转向倍率(大胆的走直线, 谨慎的多抖动)
   turn *= turnMul;
 
@@ -163,11 +178,12 @@ export function step(
   else if (load > 0) deposit = depositRate * load * dt * depMul;
   else deposit = emptyDeposit ? depositRate * 0.3 * dt * depMul : 0;
 
-  const o = out || { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, deposit: 0, pauseT: 0, forageT: 0 };
+  const o = out || { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, deposit: 0, pauseT: 0, forageT: 0, dx: 0, dy: 0 };
   o.px = px; o.py = py; o.theta = theta;
   o.hx = hx; o.hy = hy;
   o.load = load; o.tumble = tumbleOut; o.lastAsym = lastAsym;
   o.deposit = deposit; o.pauseT = pauseOut; o.forageT = forageOut;
+  o.dx = dx; o.dy = dy;   // 意图位移, 供 colony 做墙阻挡后的航位推算校正(P2.1)
   return o;
 }
 

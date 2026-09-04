@@ -18,7 +18,7 @@ export class Panel {
     const groupOf = (key) => {
       if (['foodLoadRate','carryTimeout','forageTimeout','nestRadius','speed','leak'].includes(key)) return '运动 / 记忆';
       if (['sensorAngle','sensorDist','sensorMode','K_steer','saturationMode','K_sat'].includes(key)) return '感知';
-      if (['K_chem','K_home','K_out','sigma','tumbleAmp','alpha'].includes(key)) return '转向';
+      if (['K_chem','K_home','K_out','K_wall','sigma','tumbleAmp','alpha'].includes(key)) return '转向';
       if (['speedVar','turnVar','depositVar','pauseRate','pauseTime','nestDwell','missRecover'].includes(key)) return '真实感';
       if (['diffuseWeight','decayRate','peak','emptyDeposit'].includes(key)) return '场';
       return '世界';

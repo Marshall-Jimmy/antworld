@@ -93,6 +93,26 @@ void main(){
   o = vec4(col*a, 1.0);
 }`;
 
+// 墙(P2.1): 每墙格一个实心方块点。不透明板岩色, 普通混合盖在场上(不参与发光叠加)。
+const VS_WALL = `#version 300 es
+in vec2 aPos;
+uniform mat3 uView; uniform float uSize;
+void main(){
+  vec3 p = uView*vec3(aPos,1.0);
+  gl_Position = vec4(p.xy,0.0,1.0);
+  gl_PointSize = max(2.0, uSize);
+}`;
+
+const FS_WALL = `#version 300 es
+precision highp float;
+out vec4 o;
+void main(){
+  // 方块点内轻微中心亮边缘暗, 让整面墙有一点厚度感
+  vec2 d = abs(gl_PointCoord - 0.5);
+  float edge = smoothstep(0.5, 0.34, max(d.x, d.y));
+  o = vec4(mix(vec3(0.13,0.15,0.19), vec3(0.30,0.34,0.42), edge), 1.0);
+}`;
+
 const VS_CIRCLE = `#version 300 es
 in vec2 aPos;
 uniform mat3 uView; uniform vec2 uCenter; uniform float uRadius;
@@ -161,6 +181,7 @@ export class WebGL2Backend extends Backend {
     this.pField = program(gl, VS_FIELD, FS_FIELD);
     this.pAnt = program(gl, VS_ANT, FS_ANT);
     this.pFood = program(gl, VS_FOOD, FS_FOOD);
+    this.pWall = program(gl, VS_WALL, FS_WALL);
     this.pCircle = program(gl, VS_CIRCLE, FS_CIRCLE);
 
     // ---- location 缓存（每帧查询 getUniformLocation/getAttribLocation 有开销） ----
@@ -168,12 +189,14 @@ export class WebGL2Backend extends Backend {
       [this.pField, gl.getUniformLocation(this.pField, 'uView')],
       [this.pAnt, gl.getUniformLocation(this.pAnt, 'uView')],
       [this.pFood, gl.getUniformLocation(this.pFood, 'uView')],
+      [this.pWall, gl.getUniformLocation(this.pWall, 'uView')],
       [this.pCircle, gl.getUniformLocation(this.pCircle, 'uView')],
     ]);
     this.loc = {
       peak: gl.getUniformLocation(this.pField, 'uPeak'),
       antScale: gl.getUniformLocation(this.pAnt, 'uScale'),
       foodZoom: gl.getUniformLocation(this.pFood, 'uZoom'),
+      wallSize: gl.getUniformLocation(this.pWall, 'uSize'),
       center: gl.getUniformLocation(this.pCircle, 'uCenter'),
       radius: gl.getUniformLocation(this.pCircle, 'uRadius'),
       color: gl.getUniformLocation(this.pCircle, 'uColor'),
@@ -189,6 +212,12 @@ export class WebGL2Backend extends Backend {
     // 食物 instanced 点
     this.foodVBO = gl.createBuffer();
     this.foodCount = 0;
+
+    // 墙(P2.1): 静态几何, 只在 wallVersion 变化时重建顶点
+    this.wallVBO = gl.createBuffer();
+    this.wallData = null;
+    this.wallVersionDrawn = -1;
+    this.wallCountDrawn = 0;
 
     // 单位圆(用于巢 & 可复用)
     const N = 72, fan = new Float32Array((N + 1) * 2), loop = new Float32Array(N * 2);
@@ -244,6 +273,12 @@ export class WebGL2Backend extends Backend {
     gl.bindVertexArray(this.vaoFood);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.foodVBO);
     this._setupAttribs(gl, this.pFood, { aPos: [2, 16, 0], aRadius: [1, 16, 8], aAmount: [1, 16, 12] });
+
+    // 墙
+    this.vaoWall = gl.createVertexArray();
+    gl.bindVertexArray(this.vaoWall);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.wallVBO);
+    this._setupAttribs(gl, this.pWall, { aPos: [2, 0, 0] });
 
     // 巢盘/巢环
     this.vaoNestFan = gl.createVertexArray();
@@ -352,6 +387,8 @@ export class WebGL2Backend extends Backend {
     gl.bindVertexArray(this.vaoField);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
+    // ---- 障碍墙(P2.1): 不透明实体, 盖住场光 ----
+    this._drawWalls(gl, view.walls);
     // ---- 食物软光斑 ----
     this._drawFood(gl, foodPatches);
     // ---- 巢:盘 + 环 ----
@@ -361,6 +398,38 @@ export class WebGL2Backend extends Backend {
 
     gl.bindVertexArray(null);
     gl.disable(gl.BLEND);
+  }
+
+  // 墙格 → 点精灵。顶点只在 wallVersion 变化时重建(静止墙每帧零重建成本)。
+  _drawWalls(gl, walls) {
+    if (!walls || walls.count === 0) return;
+    if (this.wallVersionDrawn !== walls.version) {
+      const { buf, gw, gh, cell } = walls;
+      const n = walls.count;
+      if (!this.wallData || this.wallData.length < n * 2) this.wallData = new Float32Array(n * 2);
+      const d = this.wallData;
+      let m = 0;
+      for (let iy = 0; iy < gh; iy++) {
+        for (let ix = 0; ix < gw; ix++) {
+          if (buf[iy * gw + ix]) {
+            d[m++] = (ix + 0.5) * cell;
+            d[m++] = (iy + 0.5) * cell;
+          }
+        }
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.wallVBO);
+      gl.bufferData(gl.ARRAY_BUFFER, d.subarray(0, m), gl.STATIC_DRAW);
+      this.wallCountDrawn = n;
+      this.wallVersionDrawn = walls.version;
+    }
+    this._use(gl, this.pWall);
+    // 点大小 = 格边长(世界单位) × 像素/世界单位(含 dpr), 与格子严丝合缝
+    gl.uniform1f(this.loc.wallSize, walls.cell * this._zoom * this.dpr);
+    gl.bindVertexArray(this.vaoWall);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);   // 不透明实体, 不与发光叠加
+    gl.drawArrays(gl.POINTS, 0, this.wallCountDrawn);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.bindVertexArray(null);
   }
 
   _drawFood(gl, foodPatches) {
@@ -433,12 +502,14 @@ export class WebGL2Backend extends Backend {
     gl.deleteBuffer(this.quad);
     gl.deleteBuffer(this.antVBO);
     gl.deleteBuffer(this.foodVBO);
+    gl.deleteBuffer(this.wallVBO);
     gl.deleteBuffer(this.aFan);
     gl.deleteBuffer(this.aLoop);
     gl.deleteBuffer(this.cornerVBO);
     gl.deleteVertexArray(this.vaoField);
     gl.deleteVertexArray(this.vaoAnt);
     gl.deleteVertexArray(this.vaoFood);
+    gl.deleteVertexArray(this.vaoWall);
     gl.deleteVertexArray(this.vaoNestFan);
     gl.deleteVertexArray(this.vaoNestLoop);
   }

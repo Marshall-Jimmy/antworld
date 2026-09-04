@@ -20,7 +20,8 @@ let world, field, colony, hash, stats;
 
 function buildWorldParams() {
   const w = get('worldW'), h = get('worldH'), cell = get('gridCell');
-  world = new World(w, h);
+  // world.cell 与 field.cellSize 保持一致: 墙掩码/渲染/查询全部对齐同一套格子
+  world = new World(w, h, cell);
   field = new Field(w, h, cell);
   hash = new SpatialHash(Math.max(40, cell * 6), w, h);
   return { r: rng(hashSeed(seed)), w, h };
@@ -39,8 +40,9 @@ function reset() {
 }
 
 function step(dt) {
-  // 信息素扩散/衰减
-  field.step(get('diffuseWeight'), Math.pow(get('decayRate'), dt));
+  // 信息素扩散/衰减(有墙时把墙格清零——信息素不渗不透墙)
+  field.step(get('diffuseWeight'), Math.pow(get('decayRate'), dt),
+             world.wallCount > 0 ? world.walls : null);
   // 蚂蚁推进
   colony.step(field, world, values, dt);
   // 首次发现食物计时
@@ -146,14 +148,42 @@ refit();
 pushUrl();
 
 // ---------- 输入 ----------
+// 工具(P2.1): food=左键检视/放食物(默认), wall=左键拖动画墙, erase=左键拖动擦墙。
+// 右键拖动任何模式下都平移; 右键单击仍是移除食物。
+let tool = 'food';
+const TOOL_LABEL = { food: '食物', wall: '画墙', erase: '擦墙' };
+const WALL_BRUSH = 22;   // 墙刷半径(世界单位) ≈ 5~6 格宽, 蚂蚁不会从对角缝里挤过去
+function setTool(t) { tool = t; showToast(`工具: ${TOOL_LABEL[t]}(F/W/E 切换, X 清墙)`); }
+
 let dragging = false, moved = false, lastX = 0, lastY = 0;
+let painting = false, lastWX = 0, lastWY = 0;
 canvas.addEventListener('mousedown', (e) => {
   dragging = true; moved = false;
   lastX = e.clientX; lastY = e.clientY;
+  if (e.button === 0 && (tool === 'wall' || tool === 'erase')) {
+    painting = true;
+    const [wx, wy] = screenToWorld(e.clientX, e.clientY);
+    lastWX = wx; lastWY = wy;
+    world.paintWall(wx, wy, WALL_BRUSH, tool === 'wall');
+  }
   e.preventDefault();
 });
 window.addEventListener('mousemove', (e) => {
   if (!dragging) return;
+  if (painting) {
+    const [wx, wy] = screenToWorld(e.clientX, e.clientY);
+    // 沿拖动轨迹插值补点(步长≈刷子半径/2), 快速甩动不留断口
+    const d = Math.hypot(wx - lastWX, wy - lastWY);
+    const steps = Math.max(1, Math.ceil(d / (WALL_BRUSH * 0.5)));
+    const on = tool === 'wall';
+    for (let k = 1; k <= steps; k++) {
+      world.paintWall(lastWX + (wx - lastWX) * k / steps,
+                      lastWY + (wy - lastWY) * k / steps, WALL_BRUSH, on);
+    }
+    lastWX = wx; lastWY = wy;
+    moved = true;
+    return;
+  }
   const dx = e.clientX - lastX, dy = e.clientY - lastY;
   if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
   camera.cx -= dx / camera.zoom;
@@ -163,6 +193,7 @@ window.addEventListener('mousemove', (e) => {
 window.addEventListener('mouseup', (e) => {
   if (!dragging) return;
   dragging = false;
+  if (painting) { painting = false; return; }
   if (moved) return;
   const [wx, wy] = screenToWorld(e.clientX, e.clientY);
   if (e.button === 2 || e.ctrlKey) {
@@ -171,6 +202,7 @@ window.addEventListener('mouseup', (e) => {
     inspector.select(-1);
     return;
   }
+  if (tool !== 'food') return;   // wall/erase 的单击已在 mousedown 处理
   // 左键：先找蚂蚁检视，没有就放食物
   hash.build(colony.px, colony.py, colony.count);
   const nearR = Math.max(14 / camera.zoom, get('gridCell') * 2);
@@ -201,11 +233,19 @@ canvas.addEventListener('wheel', (e) => {
   camera.cx += mx - sx; camera.cy += my - sy;
 }, { passive: false });
 
-// 键盘：1/2/3/4 = 1/8·1·4·64 倍速, 0 = 暂停/继续
+// 键盘：1/2/3/4 = 1/8·1·4·64 倍速, 0 = 暂停/继续, F/W/E = 切工具, X = 清墙
 window.addEventListener('keydown', (e) => {
   const map = { '1': 0.125, '2': 1, '3': 4, '4': 64 };
   if (map[e.key]) { loop.setSpeed(map[e.key]); showToast(`速度 ${map[e.key]}x`); }
   if (e.key === '0') { loop.setSpeed(loop.timeScale ? 0 : 1); }
+  if (e.key === 'f' || e.key === 'F') setTool('food');
+  if (e.key === 'w' || e.key === 'W') setTool('wall');
+  if (e.key === 'e' || e.key === 'E') setTool('erase');
+  if (e.key === 'x' || e.key === 'X') {
+    const n = world.wallCount;
+    world.clearWalls();
+    if (n > 0) showToast('墙已全部清除');
+  }
 });
 
 // ---------- 主循环 ----------
@@ -227,6 +267,10 @@ function renderFrame() {
     field, foodPatches: world.foodPatches,
     nestX: world.nestX, nestY: world.nestY, nestRadius: get('nestRadius'),
     colony,
+    // 障碍墙(P2.1): 有墙才传, 后端按 wallVersion 缓存顶点
+    walls: world.wallCount > 0
+      ? { buf: world.walls, gw: world.gw, gh: world.gh, cell: world.cell, count: world.wallCount, version: world.wallVersion }
+      : null,
   });
   inspector.record();
   inspector.draw();
@@ -241,7 +285,8 @@ function composeHUD() {
     `蚂蚁 ${colony.count} · 负重 ${loaded} · 空手返巢 ${colony.aborts} · 感知 ${mode}\n` +
     `首次发现食物 ${stats.firstFood === null ? '—' : stats.firstFood.toFixed(1) + 's'}\n` +
     `速度 ${speed}  (1/2/3/4   0=暂停)\n` +
-    `左键:点击蚂蚁检视 / 空地放食物  右键:移除食物  滚轮:缩放\n` +
+    `工具 ${TOOL_LABEL[tool]}(F/W/E) · 墙 ${world.wallCount} 格(X清墙)\n` +
+    `左键:检视/放食物/画墙  右键:移除食物·拖动平移  滚轮:缩放\n` +
     `seed ${seed.slice(0, 10)}`;
 }
 
