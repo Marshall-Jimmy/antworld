@@ -4,10 +4,13 @@
 
 // 输入状态：{ px, py, theta, hx, hy, load, tumble, seedNoise,
 //             pauseT = 0, speedMul = 1, turnMul = 1, depMul = 1, forageT = 0, misses = 0,
-//             wfl/wfm/wfr = 0 (三触角撞墙标志, P2.1) }
+//             wfl/wfm/wfr = 0 (三触角撞墙标志, P2.1),
+//             wallSide = 0 (沿墙侧偏好 ±1/0, 贴墙期间保持, P2.2),
+//             afl/afm/afr = 0 (三触角报警信息素浓度, P2.2) }
 // 参数：{ sensorAngle, sensorDist, K_chem, K_home, K_out, sigma, tumbleAmp, alpha,
 //         speed, leak, depositRate, saturationMode, K_sat, emptyDeposit,
 //         sensorMode, K_steer, K_conf...(P1.7), K_wall(P2.1),
+//         K_alarm, alarmSens(P2.2),
 //         pauseRate, pauseTime, forageTimeout(P1.9) }
 // gauss() → 标准正态分布采样
 // uniform() → [0,1)均匀分布
@@ -49,11 +52,14 @@ export function step(
     confA, confB, confC, confD,
     pauseRate = 0, pauseTime = 0, forageTimeout = 0,
     K_wall = 0,
+    K_alarm = 0, alarmSens = 0.02,
   } = params;
 
   let { px, py, theta, hx, hy, load, tumble, lastAsym = 0,
         pauseT = 0, speedMul = 1, turnMul = 1, depMul = 1, forageT = 0, misses = 0,
-        wfl = 0, wfm = 0, wfr = 0 } = state;
+        wfl = 0, wfm = 0, wfr = 0,
+        afl = 0, afm = 0, afr = 0,
+        wallSide = 0 } = state;
 
   // 1. 感知: FL, FR 是原始浓度,先过饱和变成"尝到的量"
   const sl = sense(fl, saturationMode, K_sat);
@@ -118,16 +124,38 @@ export function step(
   // D: 丢路时朝"最后闻到路的一侧"回环搜索(默认关)
   if (confD) turn += K_return * lastAsym * (1 - confEff);
 
-  // 2a'. 墙避让(P2.1): 触角撞墙就转开——左墙→右转, 右墙→左转, 只有正前墙→掷硬币选
-  // 一侧; 双侧都堵(窄缝/夹道)时不干预, 让蚂蚁直线过缝(运动阻挡兜底)。
+  // 2a'. 墙避让(P2.1): 触角撞墙就转开——左墙→右转, 右墙→左转; 只有正前墙→沿墙滑行。
+  // 早期版本逐步掷硬币定侧, 左右相消, 蚂蚁被钉死在墙前(对称抖动零净位移), 负重蚁
+  // 到死也绕不过一道长墙(walls_check P2.2 发现)。真实蚂蚁沿墙走有个体的左右偏好
+  // (惯用手), 故每只蚂蚁在本次贴墙期间保持同一侧: 首次贴墙掷硬币定侧(个体差异来自
+  // 各自随机流, 群体两侧行为对称), 离墙(三触角全空)后清零, 下次贴墙重新定侧。
+  // 双侧都堵(窄缝/夹道)时不干预, 让蚂蚁直线过缝(运动阻挡兜底)。
   // K_wall=0 或没墙(三标志全 0, colony 侧短路)时本块不触发、不消耗随机数——
   // no-wall 行为 bit 级不变。
+  let wallSideOut = wallSide;
   if (K_wall > 0 && (wfl || wfm || wfr)) {
     let ws = 0;
     if (wfl && !wfr) ws = -K_wall;
     else if (wfr && !wfl) ws = K_wall;
-    else if (wfm) ws = (uniform() < 0.5 ? K_wall : -K_wall);
+    else if (wfm) {
+      if (wallSideOut === 0) wallSideOut = uniform() < 0.5 ? 1 : -1;
+      ws = wallSideOut * K_wall;
+    }
     if (ws) turn += ws;
+  } else {
+    wallSideOut = 0;
+  }
+
+  // 2a''. 报警信息素规避(P2.2): 触角尝到 alarm(超过 alarmSens)即惊逃——哪侧浓就背对
+  // 那侧拐, 两侧相近(迎面撞上)→掷硬币。惊逃蚁照常沉积轨迹(逃逸曲线正是改道 skirt,
+  // 见沉积块注释); 报警信息素的释放只在捕杀喷溅(colony 侧), 惊逃蚁只响应不释放。
+  // 无 alarm(三值全 0, colony 侧短路)时本块不触发、
+  // 不消耗随机数——no-predator 行为 bit 级不变。
+  const scared = K_alarm > 0 && (afl > alarmSens || afr > alarmSens || afm > alarmSens);
+  if (scared) {
+    if (afl - afr > alarmSens) turn -= K_alarm;
+    else if (afr - afl > alarmSens) turn += K_alarm;
+    else turn += (uniform() < 0.5 ? K_alarm : -K_alarm);
   }
 
   // 2b. 个体性格: 固定的转向倍率(大胆的走直线, 谨慎的多抖动)
@@ -172,18 +200,23 @@ export function step(
   hy *= (1 - leak * dt);
 
   // 6. 沉积：正常只负重时沉积; emptyDeposit 打开时空手也沉积(诊断用);
-  // 停顿中的蚂蚁不沉积(原地不动不画路); depMul 给路加浓淡纹理
+  // 停顿中的蚂蚁不沉积(原地不动不画路); depMul 给路加浓淡纹理。
+  // 惊逃蚁(P2.2)照常沉积: 它活着且成功避开了危险, 逃逸曲线铺出的正是绕开
+  // 危险源的改道 skirt——禁了沉积, 改道永远成不了形(predator_check 已证)。
+  // 报警信息素的唯一来源是捕杀喷溅(colony 侧): 惊逃蚁若也喷洒, "闻到→惊逃→喷洒"
+  // 会正反馈自持, 撤离捕食者后恐慌云永不消散( predator_check 已复现), 故只响应不释放。
   let deposit;
   if (paused) deposit = 0;
   else if (load > 0) deposit = depositRate * load * dt * depMul;
   else deposit = emptyDeposit ? depositRate * 0.3 * dt * depMul : 0;
 
-  const o = out || { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, deposit: 0, pauseT: 0, forageT: 0, dx: 0, dy: 0 };
+  const o = out || { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, deposit: 0, pauseT: 0, forageT: 0, dx: 0, dy: 0, wallSide: 0 };
   o.px = px; o.py = py; o.theta = theta;
   o.hx = hx; o.hy = hy;
   o.load = load; o.tumble = tumbleOut; o.lastAsym = lastAsym;
   o.deposit = deposit; o.pauseT = pauseOut; o.forageT = forageOut;
   o.dx = dx; o.dy = dy;   // 意图位移, 供 colony 做墙阻挡后的航位推算校正(P2.1)
+  o.wallSide = wallSideOut;   // 沿墙侧偏好(±1/0), colony 写回供下一步沿用(P2.2)
   return o;
 }
 

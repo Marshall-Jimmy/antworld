@@ -25,8 +25,19 @@ const r = rng(hashSeed(seed));
 const w = values.worldW, h = values.worldH;
 const world = new World(w, h, values.gridCell);
 const field = new Field(w, h, values.gridCell);
+const alarmField = new Field(w, h, values.gridCell);
 const fx = w * 0.62, fy = h * 0.62;
 world.addFood(fx, fy, 30, 200);
+// PRED=1 → 捕食者放在巢→食物直线中点; PRED=x,y → 指定坐标(世界单位)。放它才启用 alarm。
+if (process.env.PRED) {
+  let pxx, pyy;
+  if (process.env.PRED.includes(',')) {
+    [pxx, pyy] = process.env.PRED.split(',').map(Number);
+  } else {
+    pxx = (world.nestX + fx) / 2; pyy = (world.nestY + fy) / 2;
+  }
+  world.placePredator(pxx, pyy, 45);
+}
 // WALL=bar → 在巢(中心)与食物之间立一道竖墙, 顶部留 22% 高的缺口(验收绕行画面)
 if (process.env.WALL === 'bar') {
   const wx = w * 0.56;
@@ -40,7 +51,12 @@ const dt = 1 / 60;
 for (let t = 0; t < SIM_T * 60; t++) {
   field.step(values.diffuseWeight, Math.pow(values.decayRate, dt),
              world.wallCount > 0 ? world.walls : null);
-  colony.step(field, world, values, dt);
+  // 报警场(P2.2): 有捕食者才推进(与 app 门控同义, 渲染脚本恒热)
+  if (world.predator) {
+    alarmField.step(values.diffuseWeight, Math.pow(values.alarmDecay, dt),
+                    world.wallCount > 0 ? world.walls : null);
+  }
+  colony.step(field, world, values, dt, world.predator ? alarmField : null);
 }
 
 // ---- 渲染 ----
@@ -63,18 +79,25 @@ function px(x, y, rgb, a = 255) {
 for (let i = 0; i < W * H; i++) {
   data[i * 4] = 2; data[i * 4 + 1] = 3; data[i * 4 + 2] = 8; data[i * 4 + 3] = 255;
 }
-// 信息素场（色阶 与 shader 一致）
+// 信息素场（色阶 与 shader 一致; 报警信息素活动时叠危险红）
 for (let gy = 0; gy < field.gh; gy++) {
   for (let gx = 0; gx < field.gw; gx++) {
     const v = field.buf[gy * field.gw + gx];
     const t = Math.min(1, Math.max(0, v / values.peak));
     const e = t * t * (3 - 2 * t);
-    const deep = [5, 13, 41], warm = [56, 140, 255], core = [255, 199, 71];
-    const col = [
-      deep[0] + (warm[0] - deep[0]) * smooth(t, 0, 0.55) + core[0] * e * e * 1.8,
-      deep[1] + (warm[1] - deep[1]) * smooth(t, 0, 0.55) + core[1] * e * e * 1.8,
-      deep[2] + (warm[2] - deep[2]) * smooth(t, 0, 0.55) + core[2] * e * e * 1.8,
-    ].map(v => Math.min(255, v)); // Uint8Array 赋值是 mod 256 回绕, 饱和核心(如 r=515)必须显式 clamp
+    let cr = 5 + (56 - 5) * smooth(t, 0, 0.55) + 255 * e * e * 1.8;
+    let cg = 13 + (140 - 13) * smooth(t, 0, 0.55) + 199 * e * e * 1.8;
+    let cb = 41 + (255 - 41) * smooth(t, 0, 0.55) + 71 * e * e * 1.8;
+    // 报警红(P2.2): 与 canvas2d 同一套合成(红加得最多)
+    if (world.predator) {
+      const av = alarmField.buf[gy * field.gw + gx];
+      if (av > 0) {
+        const at = Math.min(1, av / values.alarmPeak);
+        const ae = at * at * (3 - 2 * at);
+        cr += 255 * ae * 0.9; cg += 56 * ae * 0.9; cb += 26 * ae * 0.9;
+      }
+    }
+    const col = [cr, cg, cb].map(v => Math.min(255, v)); // Uint8Array 赋值是 mod 256 回绕, 饱和核心必须显式 clamp
     // 画该格中心的一个小块
     const cx = (gx + 0.5) * field.cellSize, cy = (gy + 0.5) * field.cellSize;
     for (let dy = 0; dy < field.cellSize * SCALE; dy++) {
@@ -102,6 +125,20 @@ if (world.wallCount > 0) {
   }
 }
 
+// 捕食者(P2.2): 半透明红盘(同心环) + 亮红描边
+if (world.predator) {
+  const P = world.predator;
+  for (let rr = 0; rr < P.r; rr += 3) {
+    for (let a = 0; a < 6.28; a += 0.02) {
+      px(P.x + Math.cos(a) * rr, P.y + Math.sin(a) * rr, [130, 16, 12], 70);
+    }
+  }
+  for (let a = 0; a < 6.28; a += 0.004) {
+    px(P.x + Math.cos(a) * P.r, P.y + Math.sin(a) * P.r, [255, 80, 55]);
+    px(P.x + Math.cos(a) * (P.r - 1), P.y + Math.sin(a) * (P.r - 1), [255, 80, 55]);
+  }
+}
+
 // 巢
 for (let a = 0; a < 6.28; a += 0.01) {
   px(world.nestX + Math.cos(a) * values.nestRadius, world.nestY + Math.sin(a) * values.nestRadius, [120, 210, 255]);
@@ -124,4 +161,8 @@ for (let i = 0; i < colony.count; i++) {
 mkdirSync('screenshots', { recursive: true });
 writeFileSync(`screenshots/${OUT_NAME}`, PNG.sync.write(png));
 console.log('已写出 screenshots/' + OUT_NAME, W + 'x' + H);
-console.log(`卸货=${colony.deliveries} 弃货=${colony.timeouts} 空手返巢=${colony.aborts} 墙格=${world.wallCount} 信息素峰值=${Math.max(...field.buf).toFixed(3)}`);
+let alarmPeak = 0;
+if (world.predator) { for (let i = 0; i < alarmField.buf.length; i++) if (alarmField.buf[i] > alarmPeak) alarmPeak = alarmField.buf[i]; }
+console.log(`卸货=${colony.deliveries} 弃货=${colony.timeouts} 空手返巢=${colony.aborts} 墙格=${world.wallCount}` +
+  (world.predator ? ` 捕杀=${colony.kills} 报警峰值=${alarmPeak.toFixed(3)}` : '') +
+  ` 信息素峰值=${Math.max(...field.buf).toFixed(3)}`);

@@ -1,6 +1,6 @@
-// P2.1 验收: 障碍墙与绕行
+// P2.1 验收: 障碍墙与绕行 (P2.2 诚实化重定基: 机制/阈值注释见下方与 METRICS)
 // 1) 不变量: 蚂蚁永不处于墙格内; 信息素在墙格恒 0(不渗不透)
-// 2) 可达性: 巢与食物之间立一道带缺口的墙, 蚁群仍能建立觅食路(卸货>0)
+// 2) 可达性: 巢与食物之间立一道带缺口的墙, 蚁群仍能建立真实往返的觅食路(诚实卸货>20)
 // 3) 绕行成本: 同 seed 有墙 vs 无墙 —— 首次发现时间 / 卸货量 / 总耗食对比
 // 4) 绕行真实性: 卸货蚁实际走过的路必须真的绕过墙(路径采样点不穿墙)
 // 用法: node walls_check.mjs   (SEED/SIM_T 环境变量可覆盖)
@@ -11,8 +11,18 @@ import { World } from './sim/world.js';
 import { Colony } from './sim/colony.js';
 
 const SEED = process.env.SEED || 'wallcheck';
-const SIM_T = Number(process.env.SIM_T || 90);        // 秒
+const SIM_T = Number(process.env.SIM_T || 240);       // 秒(P2.2 起: 诚实绕行往返约 35~50s,
+                                                      // 加上发现食物的时间, 90s 窗口刚够开头)
 const DT = 1 / 60;
+// P2.2 起(诚实卸货后)这里做过一次深挖: 食物曾在 0.78w(离巢 560u), 诚实化后卸货
+// 归零。根因是航位推算遗忘 leak: h 是"带遗忘的记忆"而非纯位移, 返程途中出发段的
+// 记忆按秒衰减, h 会在到巢前提前归零(560u 场景实测提前 159u), 蚂蚁此后在原地打转;
+// 更致命的是绕行路径(约 2.5 倍直距)必然超出记忆预算, 有墙场景连第一只回家的蚂蚁
+// 都产生不了。旧卸货判定 |h|<nestRadius 恰好在归零点"卸货", 把这一切伪装成 8834
+// 次"卸货"(P2.1 旧记录, 见 METRICS P2.2 修正)。真实路径积分是累积误差而非指数
+// 遗忘, 故 P2.2 把 leak 默认改为 0(参数保留供实验); 几何保持重定基后的 0.65w
+// (离巢 300u, 与 predator_check 同尺度, 测试也更快)。
+const FOOD_X = 0.65, WALL_X = 0.58;
 // PARAMS=k=v,k=v 覆盖任意参数(如 K_wall=0 看纯物理阻挡的表现)
 if (process.env.PARAMS) {
   for (const kv of process.env.PARAMS.split(',')) {
@@ -30,11 +40,11 @@ function run(withWall) {
   const r = rng(hashSeed(SEED));
   const world = new World(w, h, values.gridCell);
   const field = new Field(w, h, values.gridCell);
-  const fx = w * 0.78, fy = h * 0.5;                  // 食物在巢正右方
+  const fx = w * FOOD_X, fy = h * 0.5;                // 食物在巢正右方(P2.2 重定基, 见上)
   world.addFood(fx, fy, 30, 400);
   if (withWall) {
-    // 竖墙 x=0.62w, 顶/底各留 24% 缺口(torus 下等价于中间留一个大缺口段)
-    const wx = w * 0.62;
+    // 竖墙 x=WALL_X, 顶/底各留 24% 缺口(torus 下等价于中间留一个大缺口段)
+    const wx = w * WALL_X;
     for (let y = 0; y <= h; y += 6) {
       if (y < h * 0.24 || y > h * 0.76) continue;
       world.paintWall(wx, y, 14, true);
@@ -96,14 +106,14 @@ function run(withWall) {
   return { world, colony, field, firstFood, wallVisits, trailInWall, wallChecks, detourChecked, detourCrossed, eaten };
 }
 
-console.log('=== walls_check P2.1 ===');
-console.log('seed=' + SEED + '  sim=' + SIM_T + 's  食物位于巢正右方 0.78w');
+console.log('=== walls_check P2.1 (P2.2 诚实化重定基) ===');
+console.log('seed=' + SEED + '  sim=' + SIM_T + 's  食物位于巢正右方 0.65w (P2.2 重定基)');
 
 console.log('\n[A] 无墙基线');
 const a = run(false);
 console.log(`  卸货=${a.colony.deliveries} 弃货=${a.colony.timeouts} 总耗食=${a.eaten.toFixed(1)} 墙内蚂蚁步=${a.wallVisits}`);
 
-console.log('\n[B] 有墙(0.62w 竖墙, 上下各留 24% 缺口)');
+console.log(`\n[B] 有墙(${WALL_X}w 竖墙, 厚14u, 顶/底各留 24% 缺口)`);
 const b = run(true);
 console.log(`  墙格=${b.world.wallCount} 卸货=${b.colony.deliveries} 弃货=${b.colony.timeouts} 总耗食=${b.eaten.toFixed(1)}`);
 
@@ -113,9 +123,11 @@ if (b.wallVisits === 0) console.log('  ✓ [B] 全程无蚂蚁处于墙格内');
 if (b.trailInWall === 0) console.log(`  ✓ [B] 信息素墙格恒 0 (抽查 ${b.wallChecks} 格·次)`); else fail(`[B] ${b.trailInWall}/${b.wallChecks} 抽样墙格检出信息素(扩散掩码失效)`);
 
 console.log('\n--- 可达性与绕行 ---');
-// 阈值 50: 判据是"绕行后觅食路能否建立"。参考: 默认 K_wall=4 约 127, K_wall=0 纯物理
-// 阻挡约 86(避让转向的价值 ~+48% 吞吐, 见 METRICS P2.1); 无墙同 seed 为 8834。
-if (b.colony.deliveries > 50) console.log(`  ✓ 绕行后仍建立觅食路: 卸货 ${b.colony.deliveries} (无墙 ${a.colony.deliveries})`);
+// 阈值 20: "绕行路能否建立"用真实往返卸货数判。P2.1 旧阈值 50 是在"永动卸货机"
+// 伪影记录(有墙 127/无墙 8834)上定的, 不可比; 诚实化后(SEED=wallcheck*) 240s 内
+// 有墙卸货 49/80/231(种子间波动大——改道由谁先滑到缺口决定), 无墙 655~713。
+// 吞吐受 carryTimeout=40s 泄压阀与 2.5 倍绕行路径限制, 弃货多属诚实代价。
+if (b.colony.deliveries > 20) console.log(`  ✓ 绕行后仍建立觅食路: 卸货 ${b.colony.deliveries} (无墙 ${a.colony.deliveries})`);
 else fail(`绕行觅食路未建立: 卸货仅 ${b.colony.deliveries}`);
 if (b.detourChecked > 0) {
   const ratio = (b.detourCrossed / b.detourChecked * 100).toFixed(1);

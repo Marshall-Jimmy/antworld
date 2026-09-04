@@ -29,10 +29,14 @@ export class Colony {
     this.speedMul = new Float32Array(count); // 个体性格: 速度/转向/沉积倍率(惰性初始化,依赖 params)
     this.turnMul = new Float32Array(count);
     this.depMul = new Float32Array(count);
+    this.wallSide = new Float32Array(count); // P2.2: 个体沿墙侧偏好(±1), 0=未定(见 ant.js 墙避让)
     this._persInit = false;
     this.deliveries = 0;   // 累加:成功回巢卸货次数
     this.timeouts = 0;     // 累加:迷路弃货次数
     this.aborts = 0;       // 累加:空手觅食超时返巢次数(P1.9)
+    this.kills = 0;        // 累加:被捕食者捕杀次数(P2.2)
+    this.stepCount = 0;        // 已推进步数(P2.2, alarm 活动门控用)
+    this.lastAlarmStep = -1e9; // 最近一次 alarm 落笔/喷溅的步号(P2.2)
     this._loaded = 0;      // 增量维护的 load>0 计数(loadedCount O(1))
 
     // ---- 热路径预分配 ----
@@ -49,8 +53,8 @@ export class Colony {
       const a = Math.max(self._u(), 1e-12);
       return Math.sqrt(-2 * Math.log(a)) * Math.cos(2 * Math.PI * self._u());
     };
-    this._st = { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, pauseT: 0, speedMul: 1, turnMul: 1, depMul: 1, forageT: 0, misses: 0, wfl: 0, wfm: 0, wfr: 0 };
-    this._out = { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, deposit: 0, pauseT: 0, forageT: 0, dx: 0, dy: 0 };
+    this._st = { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, pauseT: 0, speedMul: 1, turnMul: 1, depMul: 1, forageT: 0, misses: 0, wfl: 0, wfm: 0, wfr: 0, afl: 0, afm: 0, afr: 0, wallSide: 0 };
+    this._out = { px: 0, py: 0, theta: 0, hx: 0, hy: 0, load: 0, tumble: 0, lastAsym: 0, deposit: 0, pauseT: 0, forageT: 0, dx: 0, dy: 0, wallSide: 0 };
 
     // 初始化：从巢口随机出生(带 0~2s 错峰停顿——蚁群陆续出门, 不是齐步走的圆环)
     for (let i = 0; i < count; i++) {
@@ -65,9 +69,11 @@ export class Colony {
     }
   }
 
-  // 单步推进整群。field: 信息素场; world: 食物/巢; params: 参数表; dt: 步长。
-  step(field, world, params, dt) {
+  // 单步推进整群。field: 信息素场; world: 食物/巢/墙/捕食者; params: 参数表; dt: 步长;
+  // alarmField(P2.2): 报警信息素场(可空——空表示本步不启用 alarm, 零开销且行为不变)。
+  step(field, world, params, dt, alarmField) {
     const n = this.count;
+    this.stepCount++;
     const {
       sensorAngle, sensorDist, speed,
       foodLoadRate, carryTimeout, nestRadius, nestDwell, forageTimeout, missRecover,
@@ -104,12 +110,12 @@ export class Colony {
       const fl = field.sample(flx, fly);
       const frx = pxi + Math.cos(right) * sensorDist, fry = pyi + Math.sin(right) * sensorDist;
       const fr = field.sample(frx, fry);
-      // 前触角: 仅 physarum 模式采样(diff 模式零开销)
+      // 前触角: 仅 physarum 模式采样轨迹场(diff 模式零开销); alarm 启用时前点两者都要用
       let fm = 0, fmx = 0, fmy = 0;
-      if (physarum) {
+      if (physarum || alarmField) {
         fmx = pxi + Math.cos(theta) * sensorDist;
         fmy = pyi + Math.sin(theta) * sensorDist;
-        fm = field.sample(fmx, fmy);
+        if (physarum) fm = field.sample(fmx, fmy);
       }
       // 墙感知(P2.1): 三触角各查一次墙格(有墙才查, 无墙 wfl/wfm/wfr 恒 0)
       let wfl = 0, wfm = 0, wfr = 0;
@@ -117,6 +123,13 @@ export class Colony {
         wfl = world.wallAt(flx, fly);
         wfr = world.wallAt(frx, fry);
         if (physarum) wfm = world.wallAt(fmx, fmy);
+      }
+      // 报警信息素感知(P2.2): 同三触角点采样 alarm 场(alarmField 为空 = 未启用, 恒 0)
+      let afl = 0, afm = 0, afr = 0;
+      if (alarmField) {
+        afl = alarmField.sample(flx, fly);
+        afr = alarmField.sample(frx, fry);
+        afm = alarmField.sample(fmx, fmy);
       }
 
       // ---- ant.step 纯函数推进(复用 state/out 槽) ----
@@ -129,6 +142,8 @@ export class Colony {
       st.forageT = this.forageT[i];
       st.misses = this.misses[i];
       st.wfl = wfl; st.wfm = wfm; st.wfr = wfr;
+      st.afl = afl; st.afm = afm; st.afr = afr;
+      st.wallSide = this.wallSide[i];
       antStep(st, fl, fr, fm, dt, params, gauss, u, out);
 
       // ---- 运动阻挡(P2.1): 目标格是墙 → 轴滑动(先保 x 再保 y, 全堵则原地不动)。
@@ -163,6 +178,7 @@ export class Colony {
       this.load[i] = out.load;
       this.tumble[i] = out.tumble;
       this.lastAsym[i] = out.lastAsym;
+      this.wallSide[i] = out.wallSide;   // P2.2: 沿墙侧偏好沿用至下一步
       this.pauseT[i] = out.pauseT;
       this.forageT[i] = out.forageT;
       this.seedNoise[i] = this._s;
@@ -172,7 +188,37 @@ export class Colony {
         this.misses[i] = m > 0 ? m : 0;
       }
 
+      // ---- 捕食者捕杀(P2.2): 放在沉积之前——被杀的蚂蚁当步不留轨迹(死者只留下
+      // 报警喷溅; 若先铺轨迹再死, 尸体会铺出一条引同伴走进捕杀圈的"遗骸之路")。
+      // 报警源只有捕杀喷溅(死者喷溅): 惊逃蚁不释放, 否则"闻到→惊逃→喷洒"正反馈
+      // 自持, 撤离后恐慌云永不消散(predator_check 已复现)。
+      // 用该蚁自己的随机流取重生参数(捕食者缺席时整块短路, 不耗随机数, bit 级不变);
+      // 重生即"新蚁": 清空负载/记忆/信任, 带错峰停顿出门。数量动态归 P2.5。
+      const pred = world.predator;
+      if (pred && Math.hypot(this.px[i] - pred.x, this.py[i] - pred.y) < pred.r) {
+        this.kills++;
+        if (alarmField) {
+          alarmField.deposit(this.px[i], this.py[i], params.alarmSplash ?? 8);
+          this.lastAlarmStep = this.stepCount;
+        }
+        if (this.load[i] > 0) this._loaded--;
+        const ka = u() * Math.PI * 2;
+        const kr = nestRadius * Math.sqrt(u());
+        this.px[i] = (world.nestX + Math.cos(ka) * kr + world.w) % world.w;
+        this.py[i] = (world.nestY + Math.sin(ka) * kr + world.h) % world.h;
+        this.hx[i] = 0; this.hy[i] = 0;
+        this.load[i] = 0; this.carryT[i] = 0;
+        this.forageT[i] = 0; this.misses[i] = 0;
+        this.wallSide[i] = 0;   // 重生即新蚁: 沿墙偏好重新定侧
+        this.tumble[i] = 1 + u() * 20;
+        this.pauseT[i] = 1 + u();
+        this.seedNoise[i] = this._s;
+        continue;
+      }
+
       // ---- 6.沉积(load>0 才沉积) ----
+      // 惊逃蚁也照常沉积(P2.2): 它活着且成功避开了危险, 沿逃逸曲线铺出的正是
+      // 绕开捕食者的改道 skirt——改道由群体铺出来, 不禁沉积(禁了改道永远成不了形)。
       if (out.deposit > 0) {
         field.deposit(this.px[i], this.py[i], out.deposit);
       }
@@ -201,20 +247,30 @@ export class Colony {
         this.carryT[i] = 0;
       }
 
-      // 到家卸货：|h| < nestRadius
-      if (Math.hypot(this.hx[i], this.hy[i]) < nestRadius && this.load[i] > 0) {
-        this.load[i] = 0;
-        this.hx[i] = 0;
-        this.hy[i] = 0;
-        this.carryT[i] = 0;
-        this.forageT[i] = 0;  // 新的一轮觅食计时(P1.9)
-        this._loaded--;
-        this.deliveries++;
-        // 卸货后在巢里磨蹭一会儿再出门(交卸/整理触角); 从该蚁自己的随机流取时长,
-        // 所以要把 _s 重新写回 seedNoise。nestDwell=0 时不掷随机数, 旧行为不变。
-        if (nestDwell > 0) {
-          this.pauseT[i] = nestDwell * (0.5 + u());
-          this.seedNoise[i] = this._s;
+      // 到家卸货：真实位置进巢盘(环面距离)。卸货是物理事件——食物真的进了巢——
+      // 所以只认物理抵达, 不看路径积分 h: 旧版只查 |h|<nestRadius, 会被"h 漏损/
+      // 绕圈衰减归零"的蚂蚁钻空——站在食物上每步白拿 0.008 载荷又当步卸掉,
+      // 成 60 次/s 的永动卸货机(predator_check 管饱食物下复现, 单只顶整群吞吐)。
+      // 附带的收益(自愈): 惊逃打乱 h 后的迷路负重蚁, 只要最终晃进巢盘就能把
+      // 食物真实入库并就地清零 h, 不必等 h 自己漏光——恐慌过后的经济恢复由此加快。
+      if (this.load[i] > 0) {
+        let ddx = this.px[i] - world.nestX, ddy = this.py[i] - world.nestY;
+        if (ddx > world.w / 2) ddx -= world.w; else if (ddx < -world.w / 2) ddx += world.w;
+        if (ddy > world.h / 2) ddy -= world.h; else if (ddy < -world.h / 2) ddy += world.h;
+        if (ddx * ddx + ddy * ddy < nestRadius * nestRadius) {
+          this.load[i] = 0;
+          this.hx[i] = 0;
+          this.hy[i] = 0;
+          this.carryT[i] = 0;
+          this.forageT[i] = 0;  // 新的一轮觅食计时(P1.9)
+          this._loaded--;
+          this.deliveries++;
+          // 卸货后在巢里磨蹭一会儿再出门(交卸/整理触角); 从该蚁自己的随机流取时长,
+          // 所以要把 _s 重新写回 seedNoise。nestDwell=0 时不掷随机数, 旧行为不变。
+          if (nestDwell > 0) {
+            this.pauseT[i] = nestDwell * (0.5 + u());
+            this.seedNoise[i] = this._s;
+          }
         }
       }
 

@@ -27,6 +27,7 @@ export class World {
     this.walls = null;       // Uint8Array(gw*gh), 1=墙
     this.wallCount = 0;      // 墙格总数(>0 才启用墙逻辑)
     this.wallVersion = 0;    // 每次墙变化 +1(渲染缓存失效用)
+    this.predator = null;    // 捕食者(P2.2): { x, y, r } | null, 用户放置
   }
 
   addFood(x, y, radius, amount) {
@@ -158,6 +159,10 @@ export class World {
   _ensureWalls() {
     if (!this.walls) this.walls = new Uint8Array(this.gw * this.gh);
   }
+
+  // ---- 捕食者(P2.2) ----
+  placePredator(x, y, r = 45) { this.predator = { x, y, r }; }
+  removePredator() { this.predator = null; }
 
   clear() {
     this.foodPatches.length = 0;

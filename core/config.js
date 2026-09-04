@@ -18,12 +18,14 @@ export const SCHEMA = [
   { key: 'saturationMode', default: 'log', options: ['off','mm','log'],
     desc: '感知饱和方式: off=原始浓度, mm=Michaelis-Menten, log=对数(Weber定律)' },
   { key: 'K_sat',       default: 0.05, min: 0.001, max: 1,  step: 0.005, desc: '感知饱和常数: 越小对低浓度越敏感,热点越被压平' },
+  { key: 'alarmSens',   default: 0.02, min: 0,    max: 0.5, step: 0.005, desc: '报警感知阈值:触角尝到超过该浓度的报警信息素就惊逃(P2.2)' },
 
   // ---- 转向 ----
   { key: 'K_chem',     default: 1.6, min: 0, max: 10, step: 0.05, desc: '沿信息素梯度转向的增益(空手时)' },
   { key: 'K_home',     default: 3.4, min: 0, max: 10, step: 0.05, desc: '沿回家向量转向的增益(负重时)' },
   { key: 'K_out',      default: 0,   min: 0, max: 10, step: 0.05, desc: '出巢极性:空手蚂蚁被推着向外走(K_home的反向项)' },
   { key: 'K_wall',     default: 4.0, min: 0, max: 10, step: 0.1,  desc: '避墙转向速率(rad/s):触角碰到障碍墙就转开,0=不避让(仍会被墙挡住)' },
+  { key: 'K_alarm',    default: 3.0, min: 0, max: 10, step: 0.1,  desc: '避险转向速率(rad/s):触角闻到报警信息素就背对浓度转开,0=不避险(仍会被捕)' },
   { key: 'sigma',      default: 0.30,min: 0, max: 3,  step: 0.01, desc: '底层混沌:叠加在转向上,积分出方向惯性' },
   { key: 'tumbleAmp',  default: 2.4, min: 0, max: 8,  step: 0.1,  desc: '翻滚时的一次性大转向幅度' },
   { key: 'alpha',      default: 1.7, min: 0.9, max: 3, step: 0.02, desc: 'Lévy 重尾指数:越小尾巴越重,偶发大转向越多' },
@@ -37,7 +39,7 @@ export const SCHEMA = [
 
   // ---- 运动 / 记忆 ----
   { key: 'speed',      default: 46,  min: 5,  max: 200, step: 1, desc: '移动速度(世界单位/秒)' },
-  { key: 'leak',       default: 0.02,min: 0,   max: 0.6,step: 0.005, desc: '航位推算遗忘率(比例/秒),0=永远记得' },
+  { key: 'leak',       default: 0,   min: 0,  max: 0.6,step: 0.005, desc: '航位推算遗忘率(比例/秒): 默认0=永不遗忘。真实路径积分是累积误差而非指数遗忘; 遗忘>0 会让蚂蚁在返程途中提前丢失回家方向(负重路径越长越致命, P2.2 发现), 仅作实验用' },
   { key: 'carryTimeout',default: 40, min: 1,  max: 120, step: 1, desc: '负重最久时长(秒),超时弃货防死循环' },
   { key: 'forageTimeout',default: 30,min: 0,  max: 120, step: 1, desc: '空手觅食超时(秒):太久没收获就放弃觅食、凭路径积分直接回家休整再出发(P1.9), 0=关闭' },
   { key: 'missRecover',  default: 0.02,min: 0,  max: 0.2, step: 0.005, desc: '觅食失败后的信任恢复速率(次/秒):失败越多越不信信息素路,成功采食立即回满' },
@@ -57,6 +59,9 @@ export const SCHEMA = [
   { key: 'diffuseWeight', default: 0.06, min: 0.001, max: 0.25, step: 0.001, desc: '3x3 扩散权重(越大越糊越快)' },
   { key: 'decayRate',     default: 0.97, min: 0.2,   max: 0.999,step: 0.005, desc: '信息素每秒衰减系数,1=永不消失' },
   { key: 'peak',          default: 0.7,  min: 0.01,  max: 2,    step: 0.01,  desc: '渲染色阶:信息素达到该值视为最亮' },
+  { key: 'alarmDecay',    default: 0.95, min: 0.2,   max: 0.999,step: 0.005, desc: '报警信息素每秒衰减系数:比轨迹(0.97)挥发快,半衰期约13秒(P2.2)' },
+  { key: 'alarmSplash',   default: 8,    min: 0,     max: 30,   step: 0.5,   desc: '每次捕杀原地喷溅的报警信息素量(死者是唯一的报警源,惊逃蚁只响应不释放)' },
+  { key: 'alarmPeak',     default: 1.2,  min: 0.05,  max: 8,    step: 0.05,  desc: '报警渲染色阶:报警浓度达到该值视为最红' },
   { key: 'emptyDeposit',  default: false, options: [false, true],
     desc: '诊断:空手蚂蚁是否也沉积信息素(定位 0.34 高地上限的是否来自食物打转)' },
 

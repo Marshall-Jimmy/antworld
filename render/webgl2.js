@@ -35,6 +35,19 @@ void main(){
   o = vec4(col*e, 1.0);
 }`;
 
+const FS_ALARM = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uField;
+uniform float uPeak;
+out vec4 o;
+void main(){
+  float v = max(0.0, texture(uField, vUv).r);
+  float t = clamp(v / uPeak, 0.0, 1.0);
+  float e = t*t*(3.0-2.0*t);            // smoothstep
+  o = vec4(vec3(1.0,0.22,0.10) * e * 0.9, 1.0);   // 危险红, 叠加在场光之上
+}`;
+
 // 蚂蚁:instanced 定向四边形。aCorner 是单位四角(x 向前),实例流 = 位置/朝向/负载。
 // 形体在 VS 中按朝向旋转、按负载放大(负重蚂蚁更大),FS 画长椭球 + 头亮尾暗 comet。
 const VS_ANT = `#version 300 es
@@ -179,6 +192,7 @@ export class WebGL2Backend extends Backend {
     ]), gl.STATIC_DRAW);
 
     this.pField = program(gl, VS_FIELD, FS_FIELD);
+    this.pAlarm = program(gl, VS_FIELD, FS_ALARM);
     this.pAnt = program(gl, VS_ANT, FS_ANT);
     this.pFood = program(gl, VS_FOOD, FS_FOOD);
     this.pWall = program(gl, VS_WALL, FS_WALL);
@@ -187,6 +201,7 @@ export class WebGL2Backend extends Backend {
     // ---- location 缓存（每帧查询 getUniformLocation/getAttribLocation 有开销） ----
     this.locView = new Map([
       [this.pField, gl.getUniformLocation(this.pField, 'uView')],
+      [this.pAlarm, gl.getUniformLocation(this.pAlarm, 'uView')],
       [this.pAnt, gl.getUniformLocation(this.pAnt, 'uView')],
       [this.pFood, gl.getUniformLocation(this.pFood, 'uView')],
       [this.pWall, gl.getUniformLocation(this.pWall, 'uView')],
@@ -194,6 +209,7 @@ export class WebGL2Backend extends Backend {
     ]);
     this.loc = {
       peak: gl.getUniformLocation(this.pField, 'uPeak'),
+      alarmPeak: gl.getUniformLocation(this.pAlarm, 'uPeak'),
       antScale: gl.getUniformLocation(this.pAnt, 'uScale'),
       foodZoom: gl.getUniformLocation(this.pFood, 'uZoom'),
       wallSize: gl.getUniformLocation(this.pWall, 'uSize'),
@@ -250,6 +266,12 @@ export class WebGL2Backend extends Backend {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
     this._setupAttribs(gl, this.pField, { aPos: [2, 16, 0], aUv: [2, 16, 8] });
 
+    // 报警场 quad(P2.2): 复用 quad 缓冲, 独立 VAO(pAlarm attrib 布局单独钉)
+    this.vaoAlarm = gl.createVertexArray();
+    gl.bindVertexArray(this.vaoAlarm);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
+    this._setupAttribs(gl, this.pAlarm, { aPos: [2, 16, 0], aUv: [2, 16, 8] });
+
     // 蚂蚁:角点 per-vertex(divisor 0) + 实例流(divisor 1)
     this.vaoAnt = gl.createVertexArray();
     gl.bindVertexArray(this.vaoAnt);
@@ -304,9 +326,7 @@ export class WebGL2Backend extends Backend {
     }
   }
 
-  _prepareTexture(gl, gw, gh) {
-    if (this.fieldTex && this.fieldDims[0] === gw && this.fieldDims[1] === gh) return;
-    if (this.fieldTex) gl.deleteTexture(this.fieldTex);
+  _makeTex(gl, gw, gh) {
     const tx = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tx);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
@@ -315,8 +335,21 @@ export class WebGL2Backend extends Backend {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, this.linearOK ? gl.LINEAR : gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-    this.fieldTex = tx;
+    return tx;
+  }
+
+  _prepareTexture(gl, gw, gh) {
+    if (this.fieldTex && this.fieldDims[0] === gw && this.fieldDims[1] === gh) return;
+    if (this.fieldTex) gl.deleteTexture(this.fieldTex);
+    this.fieldTex = this._makeTex(gl, gw, gh);
     this.fieldDims = [gw, gh];
+  }
+
+  _prepareAlarmTexture(gl, gw, gh) {
+    if (this.alarmTex && this.alarmDims[0] === gw && this.alarmDims[1] === gh) return;
+    if (this.alarmTex) gl.deleteTexture(this.alarmTex);
+    this.alarmTex = this._makeTex(gl, gw, gh);
+    this.alarmDims = [gw, gh];
   }
 
   setCamera(cx, cy, zoom) {
@@ -386,6 +419,20 @@ export class WebGL2Backend extends Backend {
     gl.uniform1f(this.loc.peak, values.peak);
     gl.bindVertexArray(this.vaoField);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.bindVertexArray(null);
+
+    // ---- 报警信息素(P2.2): 危险红叠加(additive), 活动才上传/绘制 ----
+    if (view.alarm && view.alarm.field) {
+      const a = view.alarm;
+      this._prepareAlarmTexture(gl, a.field.gw, a.field.gh);
+      gl.bindTexture(gl.TEXTURE_2D, this.alarmTex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, a.field.gw, a.field.gh, gl.RED, gl.FLOAT, a.field.buf);
+      this._use(gl, this.pAlarm);
+      gl.uniform1f(this.loc.alarmPeak, a.peak);
+      gl.bindVertexArray(this.vaoAlarm);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.bindVertexArray(null);
+    }
 
     // ---- 障碍墙(P2.1): 不透明实体, 盖住场光 ----
     this._drawWalls(gl, view.walls);
@@ -393,6 +440,8 @@ export class WebGL2Backend extends Backend {
     this._drawFood(gl, foodPatches);
     // ---- 巢:盘 + 环 ----
     this._drawNest(gl, nestX, nestY, nestRadius);
+    // ---- 捕食者(P2.2): 危险区红盘 + 描边 ----
+    this._drawPredator(gl, view.predator);
     // ---- 蚂蚁:单个 instanced draw call ----
     this._drawAnts(gl, colony);
 
@@ -472,6 +521,23 @@ export class WebGL2Backend extends Backend {
     gl.bindVertexArray(null);
   }
 
+  _drawPredator(gl, pred) {
+    if (!pred) return;
+    this._use(gl, this.pCircle);
+    gl.uniform2f(this.loc.center, pred.x, pred.y);
+    gl.uniform1f(this.loc.radius, pred.r);
+    // 盘:暗红半透明(additive 下即危险区辉光)
+    gl.bindVertexArray(this.vaoNestFan);
+    gl.uniform4f(this.loc.color, 0.35, 0.03, 0.03, 0.30);
+    gl.drawArrays(gl.TRIANGLE_FAN, 0, 73);
+    // 环:亮红描边
+    gl.bindVertexArray(this.vaoNestLoop);
+    gl.uniform4f(this.loc.color, 1.0, 0.30, 0.20, 1.0);
+    gl.lineWidth(1.5 * this.dpr);
+    gl.drawArrays(gl.LINE_LOOP, 0, 72);
+    gl.bindVertexArray(null);
+  }
+
   _drawAnts(gl, colony) {
     const n = colony.count;
     if (n === 0) return;
@@ -499,6 +565,7 @@ export class WebGL2Backend extends Backend {
   destroy() {
     const gl = this.ctx; if (!gl) return;
     gl.deleteTexture(this.fieldTex);
+    if (this.alarmTex) gl.deleteTexture(this.alarmTex);
     gl.deleteBuffer(this.quad);
     gl.deleteBuffer(this.antVBO);
     gl.deleteBuffer(this.foodVBO);
@@ -507,6 +574,7 @@ export class WebGL2Backend extends Backend {
     gl.deleteBuffer(this.aLoop);
     gl.deleteBuffer(this.cornerVBO);
     gl.deleteVertexArray(this.vaoField);
+    if (this.vaoAlarm) gl.deleteVertexArray(this.vaoAlarm);
     gl.deleteVertexArray(this.vaoAnt);
     gl.deleteVertexArray(this.vaoFood);
     gl.deleteVertexArray(this.vaoWall);
