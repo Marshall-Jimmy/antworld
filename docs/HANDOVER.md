@@ -1,6 +1,6 @@
 # Antworld 交接文档（HANDOVER）
 
-> 交接基准：2026-09-04，P2.2 完成后（commit `9e01692`，tag `P2.2`）。
+> 交接基准：2026-09-05，P2.3 完成后（tag `P2.3`）。
 > 读者：接手本项目的开发者或新会话 AI。目标：10 分钟读完后能安全地继续开发。
 > 配套阅读顺序：本文档 → METRICS.md（机制与数据权威）→ docs/ANT_BIOLOGY.md（真实性对照）。
 
@@ -14,25 +14,27 @@
 **最高准则（用户原话级）：行为要"有机真实"——程序化均匀观感=不合格；指标要诚实——
 交付数字必须反映真实行程结构，发现旧数字掺假要大声作废（有先例，见 §5）。**
 
-当前进度：P1.x（导航与真实感基础）→ P2.0（git 地基）→ P2.1（障碍绕行）→ **P2.2（报警信息素+捕食者，已完成）**。
+当前进度：P1.x（导航与真实感基础）→ P2.0（git 地基）→ P2.1（障碍绕行）→ P2.2（报警信息素+捕食者）→ **P2.3（昼夜与天气，已完成）**。
 已推 GitHub：https://github.com/Marshall-Jimmy/antworld（公开，origin/main 已跟踪，按阶段 tag）。
-下一步：P2.3 天气与昼夜（任务清单 #20）。
+下一步：P2.4 场景预设 + 统计曲线 + 跟拍/录像。
 
 ## 2. 快速上手
 
 ```bash
 npm install
 npm run dev        # http://localhost:5300  ← 必须是 5300：本机 Windows 保留端口段含 5173，vite 默认端口会 EACCES
-npm run build      # 产物 dist/，当前 197.51 kB (gzip 50.17)
+npm run build      # 产物 dist/，当前 209.20 kB (gzip 55.57)
 ```
 
-无头验证四件套（改动后全绿才算交付）：
+无头验证五件套（改动后全绿才算交付）：
 
 ```bash
 node smoke.mjs         # 冒烟：食物发现/负重峰值/场总量
 node perf_check.mjs    # 性能 + bit 级校验和（对基线，见 §6）
 node walls_check.mjs   # 墙不变量 + 绕行验收（240s，三种子阈值 20）
-node predator_check.mjs# 捕食者 A→B→C 三阶段验收（4/4 PASS）
+node predator_check.mjs # 捕食者 A→B→C 三阶段验收（8/8 PASS）
+node weather_check.mjs   # 昼夜/天气四组验收（15/15 PASS，全跑约 4.5 分钟）
+                       # 分组跑：SUB=identity,storm,antiphase,temp node weather_check.mjs
 ```
 
 交互速览（详见 README）：F/W/E/P 工具切换（食物/画墙/擦墙/捕食者），1/2/3/4 变速，右键平移，
@@ -44,6 +46,7 @@ node predator_check.mjs# 捕食者 A→B→C 三阶段验收（4/4 PASS）
 |---|---|---|
 | core/config.js | 参数 schema（key/default/min/max/desc） | 一切新机制先在此注册参数，默认值=关 |
 | core/rng.js | mulberry32 + seedNoise | 每蚁不相交随机流；见 §4 铁律 4 |
+| core/weather.js | **P2.3** 内源钟+温度窗口+风暴调度 → 一个复用 env 槽 | sim 层只读 env 不 import 本模块；风暴用独立随机流 seed+"\|wx" |
 | sim/ant.js | 纯函数 `antStep(st, field, …)` | 感知/转向/记忆/惊逃全在这；注释含机制理由，别删 |
 | sim/colony.js | SoA 状态容器 + 每步编排 | 经济事件（捕杀/卸货/弃货/重生）都在这；零分配热路径 |
 | sim/world.js | 巢/食物斑/墙格/捕食者实体 | 墙格=field 分辨率；P2.2 加了 placePredator/removePredator |
@@ -51,11 +54,13 @@ node predator_check.mjs# 捕食者 A→B→C 三阶段验收（4/4 PASS）
 | app.js | 场步进编排、门控、HUD、工具交互 | alarmActive() 门控 + ALARM_LINGER 在这 |
 | render/webgl2.js | instanced 蚂蚁 + 信息素场 + 报警辉光 | 双场渲染；alarmPeak 只管色阶钳制 |
 | render/canvas2d.js | Canvas 兜底（含 PNG 管线） | 与 webgl 保持行为一致 |
-| ui/panel.js | tweakpane 面板分组 | 参数组：感知/转向/真实感/场 |
+| ui/panel.js | tweakpane 面板分组 | 参数组：感知/转向/真实感/**天气 · 昼夜**/场 |
 
 脚本：perf_check（校验和+性能）、smoke、bench（stigmergy 指标）、walls_check、predator_check、
-dead_site_check（死点 A/B）、probe_wall（墙穿透探针）、diag_sat（诊断杂项）、
-render_png（RENDER_SECS/RENDER_OUT/PARAMS/WALL/PRED 出验收图）。全部支持 `PARAMS=k=v` 环境覆盖。
+**weather_check（P2.3 四组验收）**、**weather_diag（P2.3 诊断台：MODE=phantom 查假家 / dwell 逐秒滞留构成 / wave 波形与占空比）**、dead_site_check（死点 A/B）、probe_wall（墙穿透探针）、
+diag_sat（诊断杂项）、render_png（RENDER_SECS/RENDER_OUT/PARAMS/WALL/PRED 出验收图；
+P2.3 另加 WX_STORM_AT=<秒> 排雨、WX_JUMP=1 推时钟半周期、FOOD=<单位> 加大食源）。
+全部支持 `PARAMS=k=v` 环境覆盖。
 
 ## 4. 架构铁律（红线，违反=返工）
 
@@ -80,17 +85,22 @@ render_png（RENDER_SECS/RENDER_OUT/PARAMS/WALL/PRED 出验收图）。全部支
 | P1.9 | 觅食超时返巢 + 路径信任 | del 必须与行程结构同读（顺路抓一口可制造海量小额假配送） |
 | P2.1 | 障碍墙 + 三触角避让 | 逐帧掷硬币定侧会左右相消把蚂蚁钉死在墙前 → 个体惯用手 |
 | P2.2 | 报警信息素 + 捕食者 + 诚实化 | 三课：①报警源只能是捕杀喷溅（惊逃也喷=恐慌云正反馈永不散）；②卸货必须纯物理判定（旧 \|h\|<巢盘 让 h≈0 壳蚁站食物上 60 次/秒永动卸货，旧基线全掺假）；③leak>0 时 h 返程中途必过零成极限环外壳（真实路径积分是累积误差非指数遗忘）→ leak 默认 0 |
+| P2.3 | 内源钟昼夜 + 温度门控 + 雨前抢收 + 雨风冲刷 | 四课：①"到家"也必须纯物理判定——\|h\|<巢盘 会让参考点无界外漂成"假家"（同一把尺子实测 21.0% 的蚁把家认在野外，滞留被放大后就地在野地里"蛰巢"；MODE=phantom node weather_diag.mjs 可重跑）；②巢内滞留该按生物钟速率走表，不是卸货那一刻乘死常数；③昼夜响应必须超线性（dayCurve=3）——线性钟下活动相位占 85%，任何 Pearson 判据的天花板就是 −0.18；④饱和群体的"出巢率"榨不出 ×2，第二条腿是缩短行程（brisk 抑制触角扫描） |
 
-## 6. 现行基线（2026-09-04，P2.2 全套：物理卸货+leak=0+惯用手）
+## 6. 现行基线（2026-09-05，P2.3 全套：物理返巢+内源钟走表+dayCurve=3）
 
-- **校验和（perf_check，3600 步）**：ants `8314152.3050845265` / field `285.06957330616132` /
-  deliveries `752` timeouts `100` 空手返巢 `1522`。基线重定链：2290（掺假）→731（物理卸货）→752（leak=0）。
-- perf ≈2.6 ms/step @5000 蚁（后台负载下可到 3.7）。
-- walls_check（240s，食物 400@0.65w，墙 0.58w）：无墙 663 / 有墙 K_wall=4 49（0 穿墙，
-  不变量全绿）；阈值 20（三种子校准）。K_wall=4 vs 0 三种子对照：均值 203 vs 69，方向支持
-  避让，但方差大（改道 bootstrap 分岔），不给比值。
-- predator_check（seed=predcheck）：A 15.35/s → B 改道 71%、捕杀 368→10→23 递减、危险区
-  流量塌至 1% → C 撤离 28s 报警散尽、43s 恢复满负荷（稳态 144.31/s）。**4/4 PASS**。
+- **校验和（perf_check，3600 步）**：ants `8296930.9330737181` / field `285.06957330616132` /
+  deliveries `752` timeouts `100` 空手返巢 `1552`。基线重定链：2290（掺假）→731（物理卸货）
+  →752（leak=0）→**752+1552（物理返巢，P2.3 教训11）**。旧 ants `8314152…`/空手返巢 `1522` 作废。
+- perf ≈2.7 ms/step @5000 蚁（后台负载下可到 3.6）。
+- walls_check（240s）：无墙 663 / 有墙 K_wall=4 **111**（0 穿墙，不变量全绿）——49→111 是
+  教训11 的红利：假家蚁不再把"返巢休整"领在墙脚。K_wall=4 vs 0 三种子对照仍留给 P2.4 统计化。
+- predator_check（seed=predcheck）**8/8**：A 稳态 315.4/s → B 邻域流量 0.9%、捕杀 122/s→0.10/s
+  → C 报警 20s 散尽、走廊重建 93%、吞吐回升 36%；盲蚁对照：总捕杀 1.4%。
+- weather_check（seed=wxcheck）**15/15**：①恒等 3/3（含"天气开但恒等构造=逐位不变"）
+  ②风暴 7/7（B 峰值段出巢 1.59×A、C 卸货 0.66×A、C 场 11178→3200、D 末 1.34×A）
+  ③反相 3/3（rho −0.928，正午 4684 vs 123=38.2×，深夜 4598 vs 121=37.9×）④温度 2/2（冷/暖 0.014×）。
+- 验收图 screenshots/p23_{day,night,pre,rain}.png（同 seed、同 peak=10；day/night 只差 WX_JUMP 半周期）。
 
 ## 7. 已知差距与技术债
 
@@ -101,17 +111,20 @@ render_png（RENDER_SECS/RENDER_OUT/PARAMS/WALL/PRED 出验收图）。全部支
 - **K_wall=4 vs 0**：三种子方向支持避让但方差大，统计化结论留给 P2.4 stats 工具。
 - **即时重生=新蚁**是简化（真实卵→工 ~43 天），归 P2.5 数量动态。
 - **报警渲染峰值钳制**：alarmPeak=1.2 只管色阶，高捕杀期场值可堆到 64——渲染正常，别误判成 bug。
+  同理信息素场在 P2.3 的长程管饱场景可达 58（peak 色阶上限已从 2 提到 24，默认 0.7 不变）。
+- **一夜蒸发**：dayLength=240 时正午场峰 58.3 → 深夜 6.0（半衰期 23s vs 夜长 ~120s），
+  网络每夜清空、白天重新成路。与上面"缺个体记忆"同源，也是 §7 第一条的最直接证据。
+- **抢收没有"巢内预备队"**：真实 ×2–3 是从巢内任务池抽人，本模型全群皆外勤（常态 90% 已在
+  巢外），出巢倍率天花板只有 ~1.6×。等 P2.5 年龄多态/任务分配补上这一维。
 - **ROADMAP.md 的 P2.2 节已过时**（写的是"惊逃蚂蚁也沉积"，实际为防正反馈改为死者喷溅）；
   机制以 METRICS.md 为权威，ROADMAP 只看后续阶段。
 - 报警剂量只有 panic 分支；真实的低浓度=聚集查看（剂量分级）未做（ANT_BIOLOGY §五，增强方向）。
 
 ## 8. 路线图与下一步（ROADMAP.md P2.3–P2.6 + 生物学修正）
 
-- **P2.3 天气与昼夜（下一个）**：ROADMAP 原案（雨=decayRate 短时拉高+催回+雨丝滤镜；
-  昼夜=速度/活动正弦调制+色温渐变）。docs/ANT_BIOLOGY §三 的修正启示：昼夜是**内源钟**
-  （相位参数可反转=昼行/夜行物种预设）；温度窗口 10–45°C 硬门控；**雨前低压→出巢率 ×2–3**
-  （切叶蚁抢收，Sujimoto 2019，最有有机感的彩蛋）；雨/风对场是指数衰减加速器（时间常数 <1h），
-  非离散抹除；洪水蚁筏/婚飞做彩蛋储备。
+- **P2.3 天气与昼夜：已完成**（按 ANT_BIOLOGY §三 的修正版实现——内源钟与光照分离、
+  相位可反转、温度窗口硬门控、雨前低压抢收、雨风=场衰减指数加速器）。细节与数据看 METRICS P2.3。
+  储备彩蛋：洪水蚁筏/婚飞。
 - **P2.4 预设+统计+跟拍+录像**：sparkline 顺手解决 §7 的 K_wall 统计化。
 - **P2.5 能量与生死**：ANT_BIOLOGY §四 的核心启示——**外勤折寿**（Cataglyphis 外勤期望 6.1 天
   vs 巢内数月）是比捕食者更日常的死亡压力；年龄多态（年轻巢内→年长外勤）可接进现有任务系统；

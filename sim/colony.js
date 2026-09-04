@@ -71,7 +71,8 @@ export class Colony {
 
   // 单步推进整群。field: 信息素场; world: 食物/巢/墙/捕食者; params: 参数表; dt: 步长;
   // alarmField(P2.2): 报警信息素场(可空——空表示本步不启用 alarm, 零开销且行为不变)。
-  step(field, world, params, dt, alarmField) {
+  // env(P2.3): 昼夜/天气调制槽(可空)。只影响行动力/觅食计时/巢内滞留走表速率, 不掷额外随机数。
+  step(field, world, params, dt, alarmField, env) {
     const n = this.count;
     this.stepCount++;
     const {
@@ -83,6 +84,9 @@ export class Colony {
     const st = this._st, out = this._out, u = this._u, gauss = this._gauss;
     const physarum = params.sensorMode === 'physarum'; // P1.8: 三触角模式需额外采样前触角
     const wallOn = world.wallCount > 0;                // P2.1: 有墙才启用墙感知/阻挡(零开销门控)
+    // 巢内滞留走生物钟表(P2.3): 只有"环境钟真的走别的速率"时才付这个判定的代价。
+    // pauseRate === 1(两开关全关 → env 为 null; 开着的正午晴天恒等于 1)时整块短路, 逐位不变。
+    const dwellClock = !!env && env.pauseRate !== 1;
 
     // ---- 个体性格惰性初始化(首步时 params 才可用): 从各自 seedNoise 的不相交位段
     // 提取倍率——确定性、且完全不干扰行为随机流; speedVar 等为 0 时恒等于 1(旧行为)。
@@ -137,14 +141,26 @@ export class Colony {
       st.hx = this.hx[i]; st.hy = this.hy[i];
       st.load = this.load[i]; st.tumble = this.tumble[i];
       st.lastAsym = this.lastAsym[i];
-      st.pauseT = this.pauseT[i];
+      let pauseSet = this.pauseT[i];
+      if (dwellClock && pauseSet > 0) {
+        // 滞留中的蚁当步不移动(effSpeed=0), 所以用本步起点判"在不在巢盘里"就够。
+        // 只给**巢内滞留**换钟表: 触角扫描微停顿是外勤行为, 照旧走墙钟——夜里让外勤蚁
+        // 原地冻住反而永远走不回巢(验收③原先卡住的就是这种假滞留)。
+        const hw2 = world.w / 2, hh2 = world.h / 2;
+        let wdx = pxi - world.nestX, wdy = pyi - world.nestY;
+        if (wdx > hw2) wdx -= world.w; else if (wdx < -hw2) wdx += world.w;
+        if (wdy > hh2) wdy -= world.h; else if (wdy < -hh2) wdy += world.h;
+        // ant.js 每步固定扣 dt, 这里补回差额 → 净扣 dt·pauseRate(速率 1 时补的是 +0, 逐位不变)
+        if (wdx * wdx + wdy * wdy <= nestRadius * nestRadius) pauseSet += dt * (1 - env.pauseRate);
+      }
+      st.pauseT = pauseSet;
       st.speedMul = this.speedMul[i]; st.turnMul = this.turnMul[i]; st.depMul = this.depMul[i];
       st.forageT = this.forageT[i];
       st.misses = this.misses[i];
       st.wfl = wfl; st.wfm = wfm; st.wfr = wfr;
       st.afl = afl; st.afm = afm; st.afr = afr;
       st.wallSide = this.wallSide[i];
-      antStep(st, fl, fr, fm, dt, params, gauss, u, out);
+      antStep(st, fl, fr, fm, dt, params, gauss, u, out, env);
 
       // ---- 运动阻挡(P2.1): 目标格是墙 → 轴滑动(先保 x 再保 y, 全堵则原地不动)。
       // 起点已在墙内(玩家把墙画到蚂蚁身上)时不阻挡, 放它自己走出墙。
@@ -269,6 +285,9 @@ export class Colony {
           // 所以要把 _s 重新写回 seedNoise。nestDwell=0 时不掷随机数, 旧行为不变。
           if (nestDwell > 0) {
             this.pauseT[i] = nestDwell * (0.5 + u());
+            // 时长只给基准: "夜里/雨中宅巢、雨前抢收涌出"改由上面的走表速率实现。旧写法在这
+            // 里乘 dwellMul, 把乘数冻结在卸货那一刻, 而钟是连续余弦、一整趟行程 ≈15s 与滞留
+            // 同量级 → 钟变了滞留没变, 深夜压不住(验收③实测仅 1.5×)。
             this.seedNoise[i] = this._s;
           }
         }
@@ -277,8 +296,9 @@ export class Colony {
       // 迷路弃货泄压阀：负重超过 carryTimeout 秒
       if (this.carryT[i] > carryTimeout && this.load[i] > 0) {
         this.load[i] = 0;
-        this.hx[i] = 0;
-        this.hy[i] = 0;
+        // 只丢货, 不清航位推算: 真实蚂蚁不会因为放下叶片就忘掉家在哪个方向。旧写法在这里
+        // 把 h 清零, 等于把"知道回家方向"的蚁变成真迷路, 并把它的参考点钉死在野外——那是
+        // 假"巢内滞留"的第二个来源(见下方返巢结算的 P2.3 修正)。弃货后它仍凭 h 直接走回家。
         this.carryT[i] = 0;
         this.forageT[i] = 0;
         this._loaded--;
@@ -288,16 +308,32 @@ export class Colony {
       // 觅食超时返巢(P1.9): returning 模式由 ant.step 导航(不跟信息素, 凭路径积分);
       // 到巢清空航位推算, 歇一会儿再出门。失败同时记一次 miss, 折扣下轮的跟路信任。
       // forageTimeout=0 时永不触发(旧行为)。
-      if (this.load[i] === 0 && forageTimeout > 0 && this.forageT[i] > forageTimeout
-          && Math.hypot(this.hx[i], this.hy[i]) < nestRadius) {
-        this.hx[i] = 0;
-        this.hy[i] = 0;
-        this.forageT[i] = 0;
-        this.misses[i] = Math.min(3, this.misses[i] + 1);
-        this.aborts++;
-        if (nestDwell > 0) {
-          this.pauseT[i] = nestDwell * (0.5 + u());
-          this.seedNoise[i] = this._s;
+      // P2.3 修正: "到家"必须**物理到家**(环面距离进巢盘), 不能只看 |h|<nestRadius。
+      // |h| 判定等于允许蚂蚁在巢外最多一巢半径处领一份"巢内滞留", 而结算同时把 h 清零——
+      // 航位推算的参考点就此被钉在那个假想的家上, 每判一次往外漂一点。实测(天气全关的
+      // perf_check 布局跑 3700 步, 可重跑 MODE=phantom node weather_diag.mjs)已有 21.0% 的蚁
+      // (1050/5000)参考点漂出巢盘、最大外漂 114;昼夜节律一开(MODE=dwell)滞留被放大到 20~70s,
+      // 半数群体站在野地里"蛰巢":深夜巢外 3087 只里 2547 只挂着滞留计——内源钟怎么加压都
+      // 压不动它们(验收③原先卡在 1.5× 的元凶)。修后两项读数都归 0。
+      // 这与 P2.2"卸货必须纯物理判定"是同一条教训的两半: 进巢结算与 h 清零都只认物理位置。
+      // 修好后 h 的参考点恒等于巢, returning 的蚁必然真的走回巢盘才结算。
+      if (this.load[i] === 0 && forageTimeout > 0 && this.forageT[i] > forageTimeout) {
+        let hdx = this.px[i] - world.nestX, hdy = this.py[i] - world.nestY;
+        if (hdx > world.w / 2) hdx -= world.w; else if (hdx < -world.w / 2) hdx += world.w;
+        if (hdy > world.h / 2) hdy -= world.h; else if (hdy < -world.h / 2) hdy += world.h;
+        if (hdx * hdx + hdy * hdy < nestRadius * nestRadius) {
+          this.hx[i] = 0;
+          this.hy[i] = 0;
+          this.forageT[i] = 0;
+          this.misses[i] = Math.min(3, this.misses[i] + 1);
+          this.aborts++;
+          if (nestDwell > 0) {
+            this.pauseT[i] = nestDwell * (0.5 + u());
+            // 时长只给基准: "夜里/雨中宅巢、雨前抢收涌出"改由上面的走表速率实现。旧写法在这
+            // 里乘 dwellMul, 把乘数冻结在卸货那一刻, 而钟是连续余弦、一整趟行程 ≈15s 与滞留
+            // 同量级 → 钟变了滞留没变, 深夜压不住(验收③实测仅 1.5×)。
+            this.seedNoise[i] = this._s;
+          }
         }
       }
     }

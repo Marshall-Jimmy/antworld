@@ -14,6 +14,10 @@
 //         pauseRate, pauseTime, forageTimeout(P1.9) }
 // gauss() → 标准正态分布采样
 // uniform() → [0,1)均匀分布
+// env(P2.3, 可空) → 天气层给本步的环境调制: { vig: 行动力乘子, urge: 觅食计时加速,
+//   brisk: 触角扫描频率抑制(P2.3 教训14) }。pauseRate 不进本函数，由 colony 消费于巢内滞留走表。
+//   传 null 时本函数 bit 级不变; 非空且全 1 时同样恒等(乘 1 无舍入误差)。
+//   环境字段绝不消耗蚂蚁自己的随机流(铁律 4), 天气随机性在 core/weather.js 独立流里抽好。
 // 关于 Lévy 幂律抽样：tumble ~ U^(-1/α)，重尾当 α < 2
 
 // ---- 感知饱和（Weber 定律）：把绝对浓度 F 换成蚂蚁实际"尝到"的相对量 ----
@@ -39,7 +43,8 @@ export function step(
   dt,                // 步长时间
   params,
   gauss, uniform,
-  out                // 可选: 复用输出槽(热路径零分配); 缺省则新建,保持纯函数语义
+  out,               // 可选: 复用输出槽(热路径零分配); 缺省则新建,保持纯函数语义
+  env                // 可选(P2.3): 昼夜/天气调制槽, null = 不启用
 ) {
   const {
     sensorAngle, sensorDist,
@@ -166,14 +171,16 @@ export function step(
   // pauseRate=0 时不掷随机数, 旧行为 bit 级不变。
   const paused = pauseT > 0;
   let pauseOut = paused ? pauseT - dt : 0;
-  if (!paused && load === 0 && !returning && pauseRate > 0 && uniform() < pauseRate * dt) {
+  // 抢收期(env.brisk>1)动机强, 环境评估让位于搬运: 判定阈值除以 brisk(只上压下不延长)。
+  // brisk=1(节律/天气关, 或正午晴天)时除数是精确的 1 → 概率与本步随机流逐位不变。
+  if (!paused && load === 0 && !returning && pauseRate > 0 && uniform() < pauseRate * dt / (env ? env.brisk : 1)) {
     pauseOut = pauseTime * (0.5 + uniform()); // 时长个体随机 0.5~1.5×
   }
 
   // 2d. 觅食计时(P1.9): 只在清醒觅食时累积(停顿不走表, 负重时由 colony 清零);
   // 超过 forageTimeout 触发上面的返巢模式, 到巢由 colony 结算。
   let forageOut = forageT;
-  if (!paused && load === 0 && forageTimeout > 0) forageOut = forageT + dt;
+  if (!paused && load === 0 && forageTimeout > 0) forageOut = forageT + (env ? dt * env.urge : dt);
 
   // 3. 翻滚：幂律抽样，重尾特征
   let tumbleOut = tumble - 1;
@@ -186,6 +193,7 @@ export function step(
   // 4. 积分位置和朝向（C: 速度谨慎 —— 主要加在负重蚂蚁上, 离路变慢, 直接打在吞吐指标上）
   theta += turn * dt;
   let effSpeed = speed * speedMul;
+  if (env) effSpeed *= env.vig;   // P2.3: 温度/雨前抢收给个体的油门(1 = 恒等, 不掷随机数)
   if (paused) effSpeed = 0;
   else if (confC && load > 0) effSpeed *= (cautionSpeed + (1 - cautionSpeed) * confEff);
   const dx = Math.cos(theta) * effSpeed * dt;

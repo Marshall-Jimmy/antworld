@@ -20,6 +20,7 @@ precision highp float;
 in vec2 vUv;
 uniform sampler2D uField;
 uniform float uPeak;
+uniform vec3 uAmbient;;
 out vec4 o;
 void main(){
   float v = max(0.0, texture(uField, vUv).r);
@@ -33,6 +34,7 @@ void main(){
   col = mix(col, warm, smoothstep(0.30,0.80,t));
   col += core * e*e * 1.6;
   o = vec4(col*e, 1.0);
+  o.rgb *= uAmbient;
 }`;
 
 const FS_ALARM = `#version 300 es
@@ -40,12 +42,14 @@ precision highp float;
 in vec2 vUv;
 uniform sampler2D uField;
 uniform float uPeak;
+uniform vec3 uAmbient;;
 out vec4 o;
 void main(){
   float v = max(0.0, texture(uField, vUv).r);
   float t = clamp(v / uPeak, 0.0, 1.0);
   float e = t*t*(3.0-2.0*t);            // smoothstep
   o = vec4(vec3(1.0,0.22,0.10) * e * 0.9, 1.0);   // 危险红, 叠加在场光之上
+  o.rgb *= uAmbient;
 }`;
 
 // 蚂蚁:instanced 定向四边形。aCorner 是单位四角(x 向前),实例流 = 位置/朝向/负载。
@@ -69,6 +73,7 @@ void main(){
 const FS_ANT = `#version 300 es
 precision highp float;
 in vec2 vC; in float vLoad;
+uniform vec3 uAmbient;;
 out vec4 o;
 void main(){
   vec3 empty = vec3(0.35,0.65,1.00);   // 空手:冷静蓝
@@ -81,6 +86,7 @@ void main(){
   float tail = clamp(exp(vC.x*1.1)*0.45, 0.0, 1.0) * smoothstep(-0.5,-0.05,vC.x);
   float a = body*(0.30+0.70*comet+tail);
   o = vec4(col*a, 1.0);
+  o.rgb *= uAmbient;
 }`;
 
 const VS_FOOD = `#version 300 es
@@ -97,6 +103,7 @@ void main(){
 const FS_FOOD = `#version 300 es
 precision highp float;
 in float vAmt;
+uniform vec3 uAmbient;;
 out vec4 o;
 void main(){
   float d = length(gl_PointCoord - 0.5);
@@ -104,6 +111,7 @@ void main(){
   float amt = clamp(vAmt, 0.0, 1.0);
   vec3 col = vec3(0.30, 1.00, 0.45)*amt;
   o = vec4(col*a, 1.0);
+  o.rgb *= uAmbient;
 }`;
 
 // 墙(P2.1): 每墙格一个实心方块点。不透明板岩色, 普通混合盖在场上(不参与发光叠加)。
@@ -118,12 +126,14 @@ void main(){
 
 const FS_WALL = `#version 300 es
 precision highp float;
+uniform vec3 uAmbient;;
 out vec4 o;
 void main(){
   // 方块点内轻微中心亮边缘暗, 让整面墙有一点厚度感
   vec2 d = abs(gl_PointCoord - 0.5);
   float edge = smoothstep(0.5, 0.34, max(d.x, d.y));
   o = vec4(mix(vec3(0.13,0.15,0.19), vec3(0.30,0.34,0.42), edge), 1.0);
+  o.rgb *= uAmbient;
 }`;
 
 const VS_CIRCLE = `#version 300 es
@@ -138,9 +148,55 @@ void main(){
 const FS_CIRCLE = `#version 300 es
 precision highp float;
 uniform vec4 uColor;
+uniform vec3 uAmbient;;
 out vec4 o;
-void main(){ o = uColor; }`;
+void main(){ o = vec4(uColor.rgb*uAmbient, uColor.a); }`;
 
+// 雨丝(P2.3): 屏幕空间全屏四边形。雨在天上, 不贴世界坐标, 所以不进 uView。
+const VS_RAIN = `#version 300 es
+layout(location=0) in vec2 aPos;
+out vec2 vN;
+void main(){ vN = aPos*0.5+0.5; gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+const FS_RAIN = `#version 300 es
+precision highp float;
+in vec2 vN;                  // 0..1 屏幕坐标, y 向上
+uniform vec2 uRes;           // 设备像素
+uniform float uTime;         // 逻辑秒: 与 sim 同步, 加速时雨也落得更快
+uniform float uRain;         // 0..1 雨强
+uniform float uWind;         // 带符号切变量: 雨丝往哪边斜、斜多少
+uniform vec3 uAmbient;       // 雨丝是散射高光, 亮度跟环境光走
+out vec4 o;
+
+float hash21(vec2 p){
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+
+// 一层视差雨: 在按风切斜、向下滚动的格网里, 每格至多一根丝(约四成格子空着)
+float layer(vec2 uv, float cell, float speed, float thick, float seed){
+  vec2 g = vec2(uv.x*uRes.x + uv.y*uRes.y*uWind, uv.y*uRes.y + uTime*speed) / cell;
+  vec2 id = floor(g), f = fract(g);
+  float h = hash21(id + seed);
+  if (h > 0.6) return 0.0;
+  float lane = 0.10 + 0.80*fract(h*37.1);      // 丝在格内的横向位置
+  float y0 = 0.02 + 0.34*fract(h*11.7);        // 亮端(雨滴头)在格内的起始高度
+  float len = 0.34 + 0.62*fract(h*23.3);       // 拖尾长度
+  if (y0 + len > 1.0) len = 1.0 - y0;          // 不跨格: 否则断口会排成可见的网格线
+  float across = smoothstep(thick, 0.0, abs(f.x - lane));
+  float along = (1.0 - smoothstep(y0, y0 + len, f.y)) * smoothstep(y0 - 0.02, y0 + 0.10, f.y);
+  return across * along;
+}
+
+void main(){
+  if (uRain <= 0.002) { o = vec4(0.0); return; }
+  float lum = dot(uAmbient, vec3(0.3333));
+  float a = uRain * (layer(vN, 70.0, 980.0, 0.050, 1.7) * 0.80
+                   + layer(vN, 46.0, 700.0, 0.040, 5.3) * 0.55
+                   + layer(vN, 28.0, 470.0, 0.050, 9.1) * 0.30);
+  o = vec4(vec3(0.62, 0.74, 0.95) * lum * a, 1.0);
+}`;
 function compile(gl, type, src) {
   const s = gl.createShader(type);
   gl.shaderSource(s, src);
@@ -171,6 +227,7 @@ export class WebGL2Backend extends Backend {
     this.fieldTex = null;
     this.fieldDims = [0, 0];
     this.linearOK = false;
+    this.amb = new Float32Array([1, 1, 1]);   // 环境光(P2.3): 恒等 = 1,1,1 = 旧画面
     this.dpr = 1;
   }
 
@@ -197,6 +254,7 @@ export class WebGL2Backend extends Backend {
     this.pFood = program(gl, VS_FOOD, FS_FOOD);
     this.pWall = program(gl, VS_WALL, FS_WALL);
     this.pCircle = program(gl, VS_CIRCLE, FS_CIRCLE);
+    this.pRain = program(gl, VS_RAIN, FS_RAIN);
 
     // ---- location 缓存（每帧查询 getUniformLocation/getAttribLocation 有开销） ----
     this.locView = new Map([
@@ -207,6 +265,15 @@ export class WebGL2Backend extends Backend {
       [this.pWall, gl.getUniformLocation(this.pWall, 'uView')],
       [this.pCircle, gl.getUniformLocation(this.pCircle, 'uView')],
     ]);
+    // 环境光(P2.3): 六个场景程序各自缓存 uAmbient(雨丝程序不经 _use, 单独取)
+    this.locAmbient = new Map([
+      [this.pField, gl.getUniformLocation(this.pField, 'uAmbient')],
+      [this.pAlarm, gl.getUniformLocation(this.pAlarm, 'uAmbient')],
+      [this.pAnt, gl.getUniformLocation(this.pAnt, 'uAmbient')],
+      [this.pFood, gl.getUniformLocation(this.pFood, 'uAmbient')],
+      [this.pWall, gl.getUniformLocation(this.pWall, 'uAmbient')],
+      [this.pCircle, gl.getUniformLocation(this.pCircle, 'uAmbient')],
+    ]);
     this.loc = {
       peak: gl.getUniformLocation(this.pField, 'uPeak'),
       alarmPeak: gl.getUniformLocation(this.pAlarm, 'uPeak'),
@@ -216,6 +283,11 @@ export class WebGL2Backend extends Backend {
       center: gl.getUniformLocation(this.pCircle, 'uCenter'),
       radius: gl.getUniformLocation(this.pCircle, 'uRadius'),
       color: gl.getUniformLocation(this.pCircle, 'uColor'),
+      rainRes: gl.getUniformLocation(this.pRain, 'uRes'),
+      rainTime: gl.getUniformLocation(this.pRain, 'uTime'),
+      rainAmt: gl.getUniformLocation(this.pRain, 'uRain'),
+      rainWind: gl.getUniformLocation(this.pRain, 'uWind'),
+      rainAmb: gl.getUniformLocation(this.pRain, 'uAmbient'),
     };
 
     // quad 使用的世界尺寸记录——面板改 worldW/H 后需要重建（否则场被拉伸到旧范围）
@@ -312,6 +384,18 @@ export class WebGL2Backend extends Backend {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.aLoop);
     this._setupAttribs(gl, this.pCircle, { aPos: [2, 0, 0] });
 
+    // 雨丝: NDC 全屏四边形(与相机无关, 单独一个 buffer/VAO)
+    this.vaoRain = gl.createVertexArray();
+    gl.bindVertexArray(this.vaoRain);
+    this.rainVBO = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.rainVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -1,-1,  1,-1,  1, 1,
+      -1,-1,  1, 1, -1, 1,
+    ]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
     gl.bindVertexArray(null);
     return true;
   }
@@ -373,6 +457,8 @@ export class WebGL2Backend extends Backend {
   _use(gl, p) {
     gl.useProgram(p);
     gl.uniformMatrix3fv(this.locView.get(p), false, this.uView);
+    const la = this.locAmbient.get(p);
+    if (la) gl.uniform3fv(la, this.amb);
   }
 
   // quad 顶点含世界尺寸；面板改 worldW/H 后（reset 重建 field）自动重建
@@ -403,8 +489,14 @@ export class WebGL2Backend extends Backend {
     const { field, foodPatches, nestX, nestY, nestRadius, colony } = view;
     this._updateView();
 
+    // 环境光(P2.3): tint 乘进所有场景层。view.env 为 null 时恒为 1 → 画面与旧版逐位一致
+    const env = view.env;
+    const amb = this.amb;
+    if (env) { amb[0] = env.tint[0]; amb[1] = env.tint[1]; amb[2] = env.tint[2]; }
+    else { amb[0] = 1; amb[1] = 1; amb[2] = 1; }
+
     gl.disable(gl.DEPTH_TEST);
-    gl.clearColor(0.008, 0.012, 0.03, 1);
+    gl.clearColor(0.008 * amb[0], 0.012 * amb[1], 0.03 * amb[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     // ---- 信息素场:发光色阶 (additive 叠加在暗底) ----
@@ -444,9 +536,28 @@ export class WebGL2Backend extends Backend {
     this._drawPredator(gl, view.predator);
     // ---- 蚂蚁:单个 instanced draw call ----
     this._drawAnts(gl, colony);
+    // ---- 雨丝(P2.3): 最后一层, 盖在所有东西之上 ----
+    if (env && env.rain > 0.01) this._drawRain(gl, env);
 
     gl.bindVertexArray(null);
     gl.disable(gl.BLEND);
+  }
+
+  // 雨丝: 纯程序化, 没有顶点数据——一格一线, 由哈希决定疏密与长短
+  _drawRain(gl, env) {
+    gl.useProgram(this.pRain);
+    gl.uniform2f(this.loc.rainRes, this.canvas.width, this.canvas.height);
+    gl.uniform1f(this.loc.rainTime, env.t || 0);
+    gl.uniform1f(this.loc.rainAmt, Math.min(1, env.rain));
+    // windDir=0 是合法值(竖直雨),不能当假值吞掉;缺失时退回常年西风 -0.5
+    const wd = env.windDir === undefined ? -0.5 : env.windDir;
+    gl.uniform1f(this.loc.rainWind, wd * (0.10 + 0.45 * env.rain));
+    gl.uniform3fv(this.loc.rainAmb, this.amb);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.bindVertexArray(this.vaoRain);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.bindVertexArray(null);
   }
 
   // 墙格 → 点精灵。顶点只在 wallVersion 变化时重建(静止墙每帧零重建成本)。
@@ -580,5 +691,7 @@ export class WebGL2Backend extends Backend {
     gl.deleteVertexArray(this.vaoWall);
     gl.deleteVertexArray(this.vaoNestFan);
     gl.deleteVertexArray(this.vaoNestLoop);
+    if (this.vaoRain) gl.deleteVertexArray(this.vaoRain);
+    if (this.rainVBO) gl.deleteBuffer(this.rainVBO);
   }
 }

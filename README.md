@@ -16,7 +16,8 @@ npm run build      # 产物在 dist/
   P=捕食者(左键放置/移除, 半径 45 内蚂蚁被捕杀); `X` 清除全部墙。
 - 右键: 移除食物 / 拖动平移; 滚轮缩放。
 - 键盘 `1/2/3/4` = 0.125/1/4/64 倍速, `0` 暂停。
-- 右侧面板实时调参(感知/转向/真实感/场), 「生成新世界」换种子, 「复制分享链接」带走当前参数+种子。
+- 键盘 `R` = 立刻排一场雨(自带 40s 雨前低压, 抢收过程看得见), `N` = 把内源钟推半周期(昼↔夜)。
+- 右侧面板实时调参(感知/转向/真实感/天气·昼夜/场), 「生成新世界」换种子, 「复制分享链接」带走当前参数+种子。
 
 ## 观察什么
 
@@ -29,6 +30,11 @@ npm run build      # 产物在 dist/
   逃生的蚂蚁沿逃逸曲线把改道 skirt 一条条铺出来, 几分钟内主流量改走圈外;
   移除捕食者(P 再点一下), 报警云几十秒散尽, 路线很快合拢回来。
   「报警感知阈值」「避险转向」(感知/转向组)与「报警信息素挥发/喷溅量」(场组)可调。
+- 昼夜与天气(P2.3): 开「昼夜节律强度」后画面色温随光照走(午夜冷蓝→晨昏暖金→正午白), 而**行为**
+  跟着蚂蚁体内的钟走——「内源钟相位」0=昼行、0.5=夜行, 同一个环境里两个物种预设完全反相(正午
+  4684 只在外 vs 深夜 123 只)。真实感来自三条独立通道: 温度窗口(10–45°C 之外冷麻痹, 出不了巢)、
+  雨前低压抢收(起雨前 40s 出巢率与搬运速度同时飙升, 雨一落地立刻收场)、雨风冲刷(轨迹场指数
+  衰减加速, 不是一步抹平)。按 R 看一场完整的风暴: 涌出→急雨停摆→雨后重建。
 - 「真实感」组拉 0: 回到整齐划一的程序化蚁群, 对比极明显。
 
 ## 开发
@@ -36,6 +42,8 @@ npm run build      # 产物在 dist/
 - `node smoke.mjs` 冒烟; `node perf_check.mjs` 性能+校验和基线; `node bench.mjs` stigmergy 指标;
   `node dead_site_check.mjs` 死点行为 A/B; `node walls_check.mjs` 障碍墙不变量+绕行验收;
   `node predator_check.mjs` 捕食者/报警 A→B→C 验收;
-  `render_png.mjs`(RENDER_SECS/RENDER_OUT/PARAMS/WALL/PRED env) 出验收图; `probe_wall.mjs` 墙穿透探针。
+  `node weather_check.mjs` 昼夜/天气四组验收(SUB=identity,storm,antiphase,temp 可分组);
+  `render_png.mjs`(RENDER_SECS/RENDER_OUT/PARAMS/WALL/PRED, 另有 WX_STORM_AT/WX_JUMP/FOOD) 出验收图;
+  `probe_wall.mjs` 墙穿透探针; `weather_diag.mjs`(MODE=phantom|dwell|wave) 昼夜/假家诊断台。
 - 指标与实验记录见 **METRICS.md**, 规划见 **ROADMAP.md**。
 - 红线: 新机制参数门控(0=旧行为 bit 级); 改热路径必须过校验和; 指标跨机制不可直比。

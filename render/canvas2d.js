@@ -29,6 +29,20 @@ function mapColor(v, peak) {
   return c;
 }
 
+// 环境光(P2.3): 与 WebGL 路径共用同一套 tint —— 出射色逐通道相乘。amb=null 时恒等,画面与旧版一致
+function rgba(c, a, amb) {
+  if (!amb) return `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+  return `rgba(${Math.round(c[0] * amb[0])},${Math.round(c[1] * amb[1])},${Math.round(c[2] * amb[2])},${a})`;
+}
+
+// 与 FS_RAIN 同构的整数哈希: 同一个格子永远画同一根丝, 不会逐帧换位置闪烁
+function hash21(ix, iy, seed) {
+  let n = (ix * 374761393 + iy * 668265263 + seed * 1442695041) | 0;
+  n = ((n ^ (n >>> 13)) * 1274126177) | 0;
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+}
+function fract(x) { return x - Math.floor(x); }
+
 export class Canvas2DBackend extends Backend {
   init(canvas) {
     this.canvas = canvas;
@@ -61,7 +75,10 @@ export class Canvas2DBackend extends Backend {
     // 旧版 sx = w/z/field.w 把 1/z 当缩放,与 WebGL 主路径/点击换算不一致,已修正
     const sx = this.zoom * this.dpr;
 
-    g.fillStyle = '#030409';
+    // 昼夜与天气(P2.3): env.tint 决定这一帧的世界亮度; 没有 env 就是旧底色
+    const env = view.env;
+    const amb = env ? env.tint : null;
+    g.fillStyle = amb ? `rgb(${Math.round(3 * amb[0])},${Math.round(4 * amb[1])},${Math.round(9 * amb[2])})` : '#030409';
     g.fillRect(0, 0, w, h);
 
     // ---- 信息素场渲染到离屏 ImageData ----
@@ -86,6 +103,7 @@ export class Canvas2DBackend extends Backend {
           r += 255 * e * 0.9; gr += 56 * e * 0.9; b += 26 * e * 0.9;  // Uint8Clamped 自动收窄
         }
       }
+      if (amb) { r *= amb[0]; gr *= amb[1]; b *= amb[2]; }   // 对齐着色器的 o.rgb *= uAmbient
       img[i * 4] = r; img[i * 4 + 1] = gr; img[i * 4 + 2] = b; img[i * 4 + 3] = 255;
     }
     // 世界到屏幕变换
@@ -101,7 +119,7 @@ export class Canvas2DBackend extends Backend {
     // ---- 障碍墙(P2.1) ----
     if (view.walls && view.walls.count > 0) {
       const { buf, gw, gh, cell } = view.walls;
-      g.fillStyle = '#46505f';
+      g.fillStyle = rgba([70, 80, 95], 1, amb);   // #46505f
       const px = cell * sx;
       for (let iy = 0; iy < gh; iy++) {
         for (let ix = 0; ix < gw; ix++) {
@@ -114,28 +132,78 @@ export class Canvas2DBackend extends Backend {
 
     // ---- 蚂蚁 ----
     const apx = 2 * this.dpr;
+    // 两套色提前算好: 5000 只蚁的循环里绝不拼字符串
+    const cLoaded = rgba([255, 210, 90], 0.9, amb);
+    const cIdle = rgba([120, 190, 255], 0.85, amb);
     for (let i = 0; i < colony.count; i++) {
       const load = colony.load[i];
-      g.fillStyle = load > 0.5 ? 'rgba(255,210,90,0.9)' : 'rgba(120,190,255,0.85)';
+      g.fillStyle = load > 0.5 ? cLoaded : cIdle;
       g.fillRect(colony.px[i] * sx, colony.py[i] * sx, apx, apx);
     }
 
     // ---- 巢 ----
-    g.fillStyle = 'rgba(30,50,80,0.4)';
+    g.fillStyle = rgba([30, 50, 80], 0.4, amb);
     g.beginPath(); g.arc(nestX * sx, nestY * sx, nestRadius * sx, 0, 7); g.fill();
-    g.strokeStyle = 'rgba(140,220,255,0.8)';
+    g.strokeStyle = rgba([140, 220, 255], 0.8, amb);
     g.lineWidth = 1.5 * this.dpr;
     g.beginPath(); g.arc(nestX * sx, nestY * sx, nestRadius * sx, 0, 7); g.stroke();
 
     // ---- 捕食者(P2.2): 危险区红盘 + 描边 ----
     if (view.predator) {
       const p = view.predator;
-      g.fillStyle = 'rgba(140,20,15,0.35)';
+      g.fillStyle = rgba([140, 20, 15], 0.35, amb);
       g.beginPath(); g.arc(p.x * sx, p.y * sx, p.r * sx, 0, 7); g.fill();
-      g.strokeStyle = 'rgba(255,80,55,0.95)';
+      g.strokeStyle = rgba([255, 80, 55], 0.95, amb);
       g.lineWidth = 1.5 * this.dpr;
       g.beginPath(); g.arc(p.x * sx, p.y * sx, p.r * sx, 0, 7); g.stroke();
     }
+
+    // ---- 雨丝(P2.3): 最后一层, 盖在所有东西之上 ----
+    if (env && env.rain > 0.01) this._drawRain(g, env, amb, w, h);
+  }
+
+  // 与 FS_RAIN 逐项对应的三层视差雨: 同一组 cell/速度/权重/种子, 两条渲染路径看到的是同一场雨。
+  // 差别只在于这里画的是硬边线段而非 smoothstep 亮带——兜底路径优先看帧率, 工程需要。
+  _drawRain(g, env, amb, w, h) {
+    const rain = Math.min(1, env.rain);
+    const wd = env.windDir === undefined ? -0.5 : env.windDir;   // windDir=0 是竖直雨, 不是缺省
+    const shear = wd * (0.10 + 0.45 * rain);                      // dx/dy, 与 uWind 同定义
+    const t = env.t || 0;
+    const dpr = this.dpr || 1;
+    const lum = ((amb ? amb[0] : 1) + (amb ? amb[1] : 1) + (amb ? amb[2] : 1)) / 3;
+    const rgb = `${Math.round(158 * lum)},${Math.round(189 * lum)},${Math.round(242 * lum)}`;
+    g.save();
+    g.setTransform(1, 0, 0, 1, 0, 0);              // 屏幕空间: 雨在天上, 不跟相机走
+    g.globalCompositeOperation = 'lighter';        // 加性混合, 对齐 blendFunc(ONE, ONE)
+    g.lineCap = 'round';
+    const LAYERS = [[70, 980, 0.80, 1.8, 1.7], [46, 700, 0.55, 1.3, 5.3], [28, 470, 0.30, 1.0, 9.1]];
+    for (let li = 0; li < LAYERS.length; li++) {
+      const cell = LAYERS[li][0] * dpr, speed = LAYERS[li][1] * dpr;
+      const wt = LAYERS[li][2], lw = LAYERS[li][3] * dpr, seed = LAYERS[li][4];
+      const scroll = t * speed;                    // 已下落的距离: 逻辑秒驱动, 64 倍速时雨也落得快
+      const baseRow = Math.floor(scroll / cell), off = scroll - baseRow * cell;
+      const rows = Math.ceil(h / cell) + 1, cols = Math.ceil(w / cell) + 1;
+      g.beginPath();                               // 一层一条 path, 每帧只 stroke 一次
+      for (let k = -1; k <= rows; k++) {
+        const idy = baseRow + k, yTop = k * cell + off;
+        for (let ix = 0; ix < cols; ix++) {
+          const hv = hash21(ix, idy, seed);
+          if (hv > 0.6) continue;                  // 约四成格子空着, 疏密才不像栅栏
+          const lane = 0.10 + 0.80 * fract(hv * 37.1);
+          const y0 = 0.02 + 0.34 * fract(hv * 11.7);
+          let len = 0.34 + 0.62 * fract(hv * 23.3);
+          if (y0 + len > 1) len = 1 - y0;          // 不跨格: 否则断口会排成可见的网格线
+          const ys = yTop + y0 * cell, ln = len * cell;
+          const xs = ix * cell + lane * cell - ys * shear;
+          g.moveTo(xs, ys);
+          g.lineTo(xs - ln * shear, ys + ln);
+        }
+      }
+      g.strokeStyle = `rgba(${rgb},${(rain * wt).toFixed(3)})`;
+      g.lineWidth = Math.max(1, lw);
+      g.stroke();
+    }
+    g.restore();
   }
 
   destroy() {}

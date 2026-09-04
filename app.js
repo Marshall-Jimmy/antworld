@@ -6,6 +6,7 @@ import { Loop } from './core/loop.js';
 import { Field } from './sim/fields.js';
 import { World } from './sim/world.js';
 import { Colony } from './sim/colony.js';
+import { Weather, weatherActive } from './core/weather.js';
 import { SpatialHash } from './sim/spatialHash.js';
 import { WebGL2Backend } from './render/webgl2.js';
 import { Canvas2DBackend } from './render/canvas2d.js';
@@ -17,6 +18,10 @@ const $ = (id) => document.getElementById(id);
 // ---------- 可重建状态 ----------
 let seed = (new URL(location.href)).searchParams.get('seed') || String(randomSeed());
 let world, field, alarmField, colony, hash, stats;
+// 昼夜与天气(P2.3): 环境层独立于 sim。两个开关都关时 envNow 恒为 null,
+// sim/场 收到的算式与旧版逐位一致; 打开时也只改时长与衰减指数, 不碰蚂蚁随机流。
+let weather = null, envNow = null;
+const actHist = new Array(40).fill(1);   // HUD 活动度曲线(滚动缓冲, 每 10 步采一点)
 
 function buildWorldParams() {
   const w = get('worldW'), h = get('worldH'), cell = get('gridCell');
@@ -38,6 +43,10 @@ function reset() {
   const fy = h * (0.55 + r() * 0.2);
   world.addFood(fx, fy, 30, 200);
   stats = { firstFood: null, startT: performance.now(), loadedMax: 0 };
+  // 换种子即换天气随机流: 同一个 seed 的风暴排期完全可复现
+  weather = new Weather(seed);
+  envNow = null;
+  actHist.fill(1);
 }
 
 // 报警信息素活动门控(P2.2): 有捕食者、或最近 100s 内有捕杀喷溅才推进 alarm 场。
@@ -50,16 +59,25 @@ function alarmActive() {
 }
 
 function step(dt) {
+  // 环境层推进(每逻辑步一次)。关闭时不构造对象, 也不掷任何随机数。
+  envNow = weatherActive(values) ? weather.step(dt, values) : null;
+  if (envNow && colony.stepCount % 10 === 0) {
+    actHist.copyWithin(0, 1);
+    actHist[actHist.length - 1] = envNow.emig;
+  }
+  // 雨水/风对信息素场是**时间加速器**: 衰减指数乘 wash, 场值连续塌落而非一步抹平。
+  // wash=1 时 dt*1 === dt 精确成立, 未开天气 → pow 结果 bit 级不变。
+  const wash = envNow ? envNow.wash : 1;
   // 信息素扩散/衰减(有墙时把墙格清零——信息素不渗不透墙)
   const hot = alarmActive();
-  field.step(get('diffuseWeight'), Math.pow(get('decayRate'), dt),
+  field.step(get('diffuseWeight'), Math.pow(get('decayRate'), dt * wash),
              world.wallCount > 0 ? world.walls : null);
   if (hot) {
-    alarmField.step(get('diffuseWeight'), Math.pow(get('alarmDecay'), dt),
+    alarmField.step(get('diffuseWeight'), Math.pow(get('alarmDecay'), dt * wash),
                     world.wallCount > 0 ? world.walls : null);
   }
   // 蚂蚁推进(alarm 未启用时传 null: 不采样不沉积, bit 级等价旧机制)
-  colony.step(field, world, values, dt, hot ? alarmField : null);
+  colony.step(field, world, values, dt, hot ? alarmField : null, envNow);
   // 首次发现食物计时
   if (stats.firstFood === null && colony.firstFoodAnt >= 0) {
     stats.firstFood = (performance.now() - stats.startT) / 1000;
@@ -149,6 +167,8 @@ const panel = new Panel({
     reset(); refit();
     pushUrl();
   },
+  onStorm() { doStorm(); },
+  onJumpClock() { doJumpClock(); },
   onShare() {
     navigator.clipboard.writeText(location.origin + buildHref()).then(
       () => showToast('分享链接已复制'),
@@ -256,6 +276,20 @@ canvas.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 // 键盘：1/2/3/4 = 1/8·1·4·64 倍速, 0 = 暂停/继续, F/W/E/P = 切工具, X = 清墙
+// R=来一场雨, N=把时钟推到对面。按钮与快捷键走同两个函数, 保证行为一致。
+// 刻意不改参数值: 参数只由面板与 URL 拥有, 按键顺手改会和分享链接不一致。
+function doStorm() {
+  if (get('weather') <= 0) { showToast('先把「天气强度」调到 >0,再按 R'); return; }
+  showToast(weather.forceStorm(values)
+    ? '气压开始下跌——约 40 秒后起雨,看蚂蚁抢收'
+    : '已经在这场风暴里了');
+}
+function doJumpClock() {
+  if (get('dayNight') <= 0) { showToast('先把「昼夜节律强度」调到 >0,再按 N'); return; }
+  weather.jumpClock();
+  showToast('时钟推到对面: 昼行↔夜行互换');
+}
+
 window.addEventListener('keydown', (e) => {
   const map = { '1': 0.125, '2': 1, '3': 4, '4': 64 };
   if (map[e.key]) { loop.setSpeed(map[e.key]); showToast(`速度 ${map[e.key]}x`); }
@@ -264,6 +298,8 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'w' || e.key === 'W') setTool('wall');
   if (e.key === 'e' || e.key === 'E') setTool('erase');
   if (e.key === 'p' || e.key === 'P') setTool('predator');
+  if (e.key === 'r' || e.key === 'R') doStorm();
+  if (e.key === 'n' || e.key === 'N') doJumpClock();
   if (e.key === 'x' || e.key === 'X') {
     const n = world.wallCount;
     world.clearWalls();
@@ -298,6 +334,11 @@ function renderFrame() {
     alarm: alarmActive() ? { field: alarmField, peak: get('alarmPeak') } : null,
     // 捕食者(P2.2): 红圈实体
     predator: world.predator ? { x: world.predator.x, y: world.predator.y, r: world.predator.r } : null,
+    // 昼夜与天气(P2.3): 后端据此做环境光染色 + 雨丝。null = 完全不改变画面。
+    env: envNow ? {
+      tint: envNow.tint, rain: envNow.rain, wind: envNow.wind, windDir: envNow.windDir,
+      light: envNow.light, t: colony.stepCount / 60,
+    } : null,
   });
   inspector.record();
   inspector.draw();
@@ -307,8 +348,27 @@ function composeHUD() {
   const speed = loop.timeScale === 0 ? '暂停' : loop.timeScale + 'x';
   const loaded = colony.loadedCount();
   const mode = get('sensorMode') === 'physarum' ? 'physarum(三触角)' : 'diff(双触角)';
+  // 环境读数: 钟点按 dayLength 折算(phase 0=正午), 活性=出巢率乘子 emig, 曲线为其 40 点历史
+  let wxLine = '';
+  if (envNow) {
+    const hour = (((envNow.phase + 0.5) % 1) * 24 + 24) % 24;
+    const hh = String(Math.floor(hour)).padStart(2, '0');
+    const mm = String(Math.floor((hour % 1) * 60)).padStart(2, '0');
+    const sky = envNow.rain > 0.02 ? `雨${Math.round(envNow.rain * 100)}%`
+      : envNow.pre > 0.02 ? `低压${Math.round(envNow.pressure)}`
+      : envNow.wind > 0.15 ? `风${Math.round(envNow.wind * 100)}%`
+      : '晴';
+    let spark = '';
+    for (let i = 0; i < actHist.length; i++) {
+      const v = Math.min(1, Math.max(0, actHist[i] / 3));
+      spark += '▁▂▄▆█'[v < 0.25 ? 0 : v < 0.45 ? 1 : v < 0.65 ? 2 : v < 0.85 ? 3 : 4];
+    }
+    wxLine = `时刻 ${hh}:${mm} · ${envNow.temp.toFixed(1)}°C · 活性 ${envNow.emig.toFixed(2)}× · ${sky}\n` +
+             `${spark}  (R=来一场雨 N=推时钟)\n`;
+  }
   HUD.textContent =
     `Antworld · fps ${loop.fps.toFixed(0)}\n` +
+    wxLine +
     `蚂蚁 ${colony.count} · 负重 ${loaded} · 空手返巢 ${colony.aborts} · 感知 ${mode}` +
     (colony.kills > 0 ? ` · 被捕杀 ${colony.kills}` : '') + `\n` +
     `首次发现食物 ${stats.firstFood === null ? '—' : stats.firstFood.toFixed(1) + 's'}\n` +

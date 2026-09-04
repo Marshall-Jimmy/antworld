@@ -4,3 +4,5 @@ bench-out/
 screenshots/
 server.log
 *.log
+logs/
+
