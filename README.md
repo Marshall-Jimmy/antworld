@@ -35,6 +35,10 @@ npm run build      # 产物在 dist/
   4684 只在外 vs 深夜 123 只)。真实感来自三条独立通道: 温度窗口(10–45°C 之外冷麻痹, 出不了巢)、
   雨前低压抢收(起雨前 40s 出巢率与搬运速度同时飙升, 雨一落地立刻收场)、雨风冲刷(轨迹场指数
   衰减加速, 不是一步抹平)。按 R 看一场完整的风暴: 涌出→急雨停摆→雨后重建。
+- 看画面**读得出结构**而不是发光一团(P2.3.1): 「色阶曲线」=0 时高浓度走廊整片烧成纯白,
+  宽度/分叉/强弱全丢; =1(默认)是对数上肩的有界色阶——「色阶参考浓度」那一格=半亮, 其上每
+  翻倍亮一档, 256× 才到白热上限, 所以最热的干线和它旁边的支路是两种颜色。同一份场数据前后对比:
+  纯白像素 5.71%→0.00%, 觅食网内可辨亮度级数 1→134。HUD 第一行自报「渲染 WebGL2」或「Canvas2D(兜底)」。
 - 「真实感」组拉 0: 回到整齐划一的程序化蚁群, 对比极明显。
 
 ## 开发
@@ -44,6 +48,8 @@ npm run build      # 产物在 dist/
   `node predator_check.mjs` 捕食者/报警 A→B→C 验收;
   `node weather_check.mjs` 昼夜/天气四组验收(SUB=identity,storm,antiphase,temp 可分组);
   `render_png.mjs`(RENDER_SECS/RENDER_OUT/PARAMS/WALL/PRED, 另有 WX_STORM_AT/WX_JUMP/FOOD) 出验收图;
-  `probe_wall.mjs` 墙穿透探针; `weather_diag.mjs`(MODE=phantom|dwell|wave) 昼夜/假家诊断台。
+  `probe_wall.mjs` 墙穿透探针; `weather_diag.mjs`(MODE=phantom|dwell|wave) 昼夜/假家诊断台;
+  `node glare_check.mjs` **光污染验收**(同一份场数据新旧色阶逐像素对比; SUB=rich,rich07,rich10,default,rain,alarm;
+  SHOTS=1 顺带出 screenshots/glare_*.png 左右对比图)。
 - 指标与实验记录见 **METRICS.md**, 规划见 **ROADMAP.md**。
 - 红线: 新机制参数门控(0=旧行为 bit 级); 改热路径必须过校验和; 指标跨机制不可直比。

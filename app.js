@@ -88,17 +88,27 @@ function step(dt) {
 }
 
 // ---------- 渲染装配 ----------
-const canvas = $('canvas');
+let canvas = $('canvas');
 let backend;
 try {
   const w = new WebGL2Backend();
   if (w.init(canvas)) backend = w;
 } catch (err) { console.warn('WebGL2 启动失败:', err); }
 if (!backend) {
+  // 画布一旦拿到过 webgl2 上下文, 再要 getContext('2d') 永远返回 null(规范行为):
+  // 兜底必须换一块干净的画布, 否则任何 WebGL 故障都会变成整屏黑 + fillStyle 崩溃。
+  const fresh = document.createElement('canvas');
+  fresh.id = canvas.id;
+  canvas.replaceWith(fresh);
+  canvas = fresh;
   const c = new Canvas2DBackend();
   c.init(canvas);
   backend = c;
 }
+// 渲染层必须自证(P2.3.1 教训15): P2.3 起 6 处 `uniform vec3 uAmbient;;` 让 WebGL2 编译失败并被静默兜底,
+// 期间浏览器里跑的一直是 Canvas2D 兜底(而兜底又因画布已被占用而黑屏)。无 warn 不等于活着: 后端名直接上 HUD。
+const RENDER_BACKEND = backend instanceof Canvas2DBackend ? 'Canvas2D(兜底)' : 'WebGL2';
+console.info(`渲染后端: ${RENDER_BACKEND}`);
 
 const HUD = $('hud');
 const toast = $('toast');
@@ -367,7 +377,7 @@ function composeHUD() {
              `${spark}  (R=来一场雨 N=推时钟)\n`;
   }
   HUD.textContent =
-    `Antworld · fps ${loop.fps.toFixed(0)}\n` +
+    `Antworld · fps ${loop.fps.toFixed(0)} · 渲染 ${RENDER_BACKEND}\n` +
     wxLine +
     `蚂蚁 ${colony.count} · 负重 ${loaded} · 空手返巢 ${colony.aborts} · 感知 ${mode}` +
     (colony.kills > 0 ? ` · 被捕杀 ${colony.kills}` : '') + `\n` +

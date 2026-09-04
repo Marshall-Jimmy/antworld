@@ -1,6 +1,6 @@
 # Antworld 交接文档（HANDOVER）
 
-> 交接基准：2026-09-05，P2.3 完成后（tag `P2.3`）。
+> 交接基准：2026-09-05，P2.3.1（光污染治理）完成后（tag `P2.3.1`）。
 > 读者：接手本项目的开发者或新会话 AI。目标：10 分钟读完后能安全地继续开发。
 > 配套阅读顺序：本文档 → METRICS.md（机制与数据权威）→ docs/ANT_BIOLOGY.md（真实性对照）。
 
@@ -14,7 +14,7 @@
 **最高准则（用户原话级）：行为要"有机真实"——程序化均匀观感=不合格；指标要诚实——
 交付数字必须反映真实行程结构，发现旧数字掺假要大声作废（有先例，见 §5）。**
 
-当前进度：P1.x（导航与真实感基础）→ P2.0（git 地基）→ P2.1（障碍绕行）→ P2.2（报警信息素+捕食者）→ **P2.3（昼夜与天气，已完成）**。
+当前进度：P1.x（导航与真实感基础）→ P2.0（git 地基）→ P2.1（障碍绕行）→ P2.2（报警信息素+捕食者）→ P2.3（昼夜与天气）→ **P2.3.1（光污染治理，已完成）**。
 已推 GitHub：https://github.com/Marshall-Jimmy/antworld（公开，origin/main 已跟踪，按阶段 tag）。
 下一步：P2.4 场景预设 + 统计曲线 + 跟拍/录像。
 
@@ -23,10 +23,10 @@
 ```bash
 npm install
 npm run dev        # http://localhost:5300  ← 必须是 5300：本机 Windows 保留端口段含 5173，vite 默认端口会 EACCES
-npm run build      # 产物 dist/，当前 209.20 kB (gzip 55.57)
+npm run build      # 产物 dist/，当前 211.99 kB (gzip 56.89)
 ```
 
-无头验证五件套（改动后全绿才算交付）：
+无头验证六件套（改动后全绿才算交付）：
 
 ```bash
 node smoke.mjs         # 冒烟：食物发现/负重峰值/场总量
@@ -35,6 +35,8 @@ node walls_check.mjs   # 墙不变量 + 绕行验收（240s，三种子阈值 20
 node predator_check.mjs # 捕食者 A→B→C 三阶段验收（8/8 PASS）
 node weather_check.mjs   # 昼夜/天气四组验收（15/15 PASS，全跑约 4.5 分钟）
                        # 分组跑：SUB=identity,storm,antiphase,temp node weather_check.mjs
+node glare_check.mjs   # 光污染验收（25/25 PASS，只量像素；约 5 分钟）
+                       # 分组跑：SUB=rich,rich07,rich10,default,rain,alarm；SHOTS=1 出左右对比 PNG
 ```
 
 交互速览（详见 README）：F/W/E/P 工具切换（食物/画墙/擦墙/捕食者），1/2/3/4 变速，右键平移，
@@ -51,12 +53,13 @@ node weather_check.mjs   # 昼夜/天气四组验收（15/15 PASS，全跑约 4.
 | sim/colony.js | SoA 状态容器 + 每步编排 | 经济事件（捕杀/卸货/弃货/重生）都在这；零分配热路径 |
 | sim/world.js | 巢/食物斑/墙格/捕食者实体 | 墙格=field 分辨率；P2.2 加了 placePredator/removePredator |
 | sim/fields.js | Field 类（采样/沉积/扩散/衰减，环面寻址） | 通用类；alarmField 是第二个实例，不是新类 |
-| app.js | 场步进编排、门控、HUD、工具交互 | alarmActive() 门控 + ALARM_LINGER 在这 |
-| render/webgl2.js | instanced 蚂蚁 + 信息素场 + 报警辉光 | 双场渲染；alarmPeak 只管色阶钳制 |
-| render/canvas2d.js | Canvas 兜底（含 PNG 管线） | 与 webgl 保持行为一致 |
+| app.js | 场步进编排、门控、HUD、工具交互 | alarmActive() 门控 + ALARM_LINGER 在这；HUD 第一行自报渲染后端 |
+| render/palette.js | **P2.3.1 唯一色阶定义**：tone 曲线 + 两张 stop 表 + GLSL 生成器 | 改色阶只改这里；三条渲染路径的常数由它生成，不可能再漂移 |
+| render/webgl2.js | instanced 蚂蚁 + 信息素场 + 报警辉光 | 双场渲染；色阶 GLSL 由 palette.js 生成，别手写常数；toneMap=0 分支保留旧原码 |
+| render/canvas2d.js | Canvas 兜底（PNG 管线另见 render_png.mjs） | 与 webgl 共用 palette.js；兜底画布必须是全新的一块（见 §5 教训15） |
 | ui/panel.js | tweakpane 面板分组 | 参数组：感知/转向/真实感/**天气 · 昼夜**/场 |
 
-脚本：perf_check（校验和+性能）、smoke、bench（stigmergy 指标）、walls_check、predator_check、
+脚本：perf_check（校验和+性能）、smoke、bench（stigmergy 指标）、walls_check、predator_check、**glare_check（P2.3.1 光污染：同一份场数据新旧色阶逐像素对比）**、
 **weather_check（P2.3 四组验收）**、**weather_diag（P2.3 诊断台：MODE=phantom 查假家 / dwell 逐秒滞留构成 / wave 波形与占空比）**、dead_site_check（死点 A/B）、probe_wall（墙穿透探针）、
 diag_sat（诊断杂项）、render_png（RENDER_SECS/RENDER_OUT/PARAMS/WALL/PRED 出验收图；
 P2.3 另加 WX_STORM_AT=<秒> 排雨、WX_JUMP=1 推时钟半周期、FOOD=<单位> 加大食源）。
@@ -87,12 +90,17 @@ P2.3 另加 WX_STORM_AT=<秒> 排雨、WX_JUMP=1 推时钟半周期、FOOD=<单�
 | P2.2 | 报警信息素 + 捕食者 + 诚实化 | 三课：①报警源只能是捕杀喷溅（惊逃也喷=恐慌云正反馈永不散）；②卸货必须纯物理判定（旧 \|h\|<巢盘 让 h≈0 壳蚁站食物上 60 次/秒永动卸货，旧基线全掺假）；③leak>0 时 h 返程中途必过零成极限环外壳（真实路径积分是累积误差非指数遗忘）→ leak 默认 0 |
 | P2.3 | 内源钟昼夜 + 温度门控 + 雨前抢收 + 雨风冲刷 | 四课：①"到家"也必须纯物理判定——\|h\|<巢盘 会让参考点无界外漂成"假家"（同一把尺子实测 21.0% 的蚁把家认在野外，滞留被放大后就地在野地里"蛰巢"；MODE=phantom node weather_diag.mjs 可重跑）；②巢内滞留该按生物钟速率走表，不是卸货那一刻乘死常数；③昼夜响应必须超线性（dayCurve=3）——线性钟下活动相位占 85%，任何 Pearson 判据的天花板就是 −0.18；④饱和群体的"出巢率"榨不出 ×2，第二条腿是缩短行程（brisk 抑制触角扫描） |
 
+| P2.3.1 | 有界对数色阶 + 三路径统一 + 蚂蚁改 alpha 混合 | 渲染层必须自证——**无 warn 不等于活着**：P2.3 的 6 处 `uniform vec3 uAmbient;;` 让 WebGL2 静默编译失败整整一个阶段，浏览器里跑的其实是 Canvas2D 兜底，而兜底又因画布已被占用必然黑屏。校验和 / weather_check / 验收 PNG 全都抓不到（PNG 管线绕开 DOM 与着色器）。根治=单一色阶来源 render/palette.js + HUD 自报后端；配套新门禁 glare_check（只量像素，25/25） |
+
 ## 6. 现行基线（2026-09-05，P2.3 全套：物理返巢+内源钟走表+dayCurve=3）
 
 - **校验和（perf_check，3600 步）**：ants `8296930.9330737181` / field `285.06957330616132` /
   deliveries `752` timeouts `100` 空手返巢 `1552`。基线重定链：2290（掺假）→731（物理卸货）
   →752（leak=0）→**752+1552（物理返巢，P2.3 教训11）**。旧 ants `8314152…`/空手返巢 `1522` 作废。
 - perf ≈2.7 ms/step @5000 蚁（后台负载下可到 3.6）。
+- **色阶基线（glare_check，seed=glare）25/25**：管饱昼间 peak=0.35 下 max 场强 171.3×peak，纯白 5.71%→0.00%、溢出 5.80%→0%、觅食网可辨亮度级数 1→134、相对反差 0%→28.2%、顶格跨度 7.42→2.23 倍频程；满雨 94.3×peak 与报警 14.5×peak 两组同向。新色阶不变量：max channel 0.990（永不截断）。
+- **旧画面逐位复现**：`toneMap=0` 的 render_png 输出与 HEAD(P2.3) 的 render_png 输出 **SHA256 相同**（`BF0B76D5…A7DF03`，seed=render/40s/800×520）。
+- vite build ✓ **211.99 kB (gzip 56.89)**（P2.3 的 209.20/55.57 作废：新增 render/palette.js 与 GLSL 生成器）。
 - walls_check（240s）：无墙 663 / 有墙 K_wall=4 **111**（0 穿墙，不变量全绿）——49→111 是
   教训11 的红利：假家蚁不再把"返巢休整"领在墙脚。K_wall=4 vs 0 三种子对照仍留给 P2.4 统计化。
 - predator_check（seed=predcheck）**8/8**：A 稳态 315.4/s → B 邻域流量 0.9%、捕杀 122/s→0.10/s
@@ -111,7 +119,8 @@ P2.3 另加 WX_STORM_AT=<秒> 排雨、WX_JUMP=1 推时钟半周期、FOOD=<单�
 - **K_wall=4 vs 0**：三种子方向支持避让但方差大，统计化结论留给 P2.4 stats 工具。
 - **即时重生=新蚁**是简化（真实卵→工 ~43 天），归 P2.5 数量动态。
 - **报警渲染峰值钳制**：alarmPeak=1.2 只管色阶，高捕杀期场值可堆到 64——渲染正常，别误判成 bug。
-  同理信息素场在 P2.3 的长程管饱场景可达 58（peak 色阶上限已从 2 提到 24，默认 0.7 不变）。
+  同理信息素场在 P2.3 的长程管饱场景可达 58。P2.3.1 之后这不再是问题：色阶改成有界对数上肩，
+  `peak` 是**半亮点**而不是「最亮」，256×peak 才到白热上限，任何浓度都不会再截断成白（溢出恒为 0）。
 - **一夜蒸发**：dayLength=240 时正午场峰 58.3 → 深夜 6.0（半衰期 23s vs 夜长 ~120s），
   网络每夜清空、白天重新成路。与上面"缺个体记忆"同源，也是 §7 第一条的最直接证据。
 - **抢收没有"巢内预备队"**：真实 ×2–3 是从巢内任务池抽人，本模型全群皆外勤（常态 90% 已在
@@ -121,6 +130,10 @@ P2.3 另加 WX_STORM_AT=<秒> 排雨、WX_JUMP=1 推时钟半周期、FOOD=<单�
 - 报警剂量只有 panic 分支；真实的低浓度=聚集查看（剂量分级）未做（ANT_BIOLOGY §五，增强方向）。
 
 ## 8. 路线图与下一步（ROADMAP.md P2.3–P2.6 + 生物学修正）
+
+- **P2.3.1 光污染治理：已完成**（不在原 ROADMAP 上，由用户报告"走廊烧成白"触发）。三条渲染路径统一到一个
+  色阶来源 render/palette.js，色阶改成有界对数上肩，蚂蚁改 alpha 混合，新参数 toneMap 门控旧行为。
+  顺带把哑了一个阶段的 WebGL2 修回来。细节、逐像素数据与教训15 见 METRICS P2.3.1。
 
 - **P2.3 天气与昼夜：已完成**（按 ANT_BIOLOGY §三 的修正版实现——内源钟与光照分离、
   相位可反转、温度窗口硬门控、雨前低压抢收、雨风=场衰减指数加速器）。细节与数据看 METRICS P2.3。
@@ -138,7 +151,7 @@ P2.3 另加 WX_STORM_AT=<秒> 排雨、WX_JUMP=1 推时钟半周期、FOOD=<单�
 | 文档 | 内容 | 地位 |
 |---|---|---|
 | README.md | 怎么跑、怎么玩、红线速记 | 入口 |
-| METRICS.md | P1.6–P2.2 全部机制、A/B 数据、校验和、教训 ①–⑪ | **机制与数据权威** |
+| METRICS.md | P1.6–P2.3.1 全部机制、A/B 数据、校验和、教训 ①–⑮ | **机制与数据权威** |
 | ROADMAP.md | P2 系列规划与剪枝 | 规划参考，个别节已过时 |
 | docs/ANT_BIOLOGY.md | 真实蚂蚁生物学对照手册：13 项机制↔生物学对照表 + 四方向事实 + 参数启示 | 真实性标尺 |
 | docs/HANDOVER.md | 本文档 | 交接快照 |

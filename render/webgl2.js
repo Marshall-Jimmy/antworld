@@ -8,6 +8,7 @@
 
 import { Backend } from './backend.js';
 import { get, values, SCHEMA } from '../core/config.js';
+import { glslRamp, glslTone, FIELD_STOPS, ALARM_STOPS } from './palette.js';
 
 const VS_FIELD = `#version 300 es
 in vec2 aPos; in vec2 aUv;
@@ -15,15 +16,21 @@ uniform mat3 uView;
 out vec2 vUv;
 void main(){ vUv=aUv; vec3 p=uView*vec3(aPos,1.0); gl_Position=vec4(p.xy,0.0,1.0); }`;
 
+// 色阶曲线与 stop 表由 render/palette.js 生成成 GLSL —— 三条渲染路径不可能再各写一套常数。
+// uTone=1 走新的软压缩有界色阶(光污染治理), uTone=0 保留下面这段旧硬钳制原码, 旧截图逐位可复现。
 const FS_FIELD = `#version 300 es
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uField;
 uniform float uPeak;
-uniform vec3 uAmbient;;
+uniform float uTone;
+uniform vec3 uAmbient;
 out vec4 o;
+${glslTone()}
+${glslRamp('awFieldRamp', FIELD_STOPS)}
 void main(){
   float v = max(0.0, texture(uField, vUv).r);
+  if (uTone > 0.5) { o = vec4(awFieldRamp(awTone(v / uPeak)), 1.0); o.rgb *= uAmbient; return; }
   float t = clamp(v / uPeak, 0.0, 1.0);
   float e = t*t*(3.0-2.0*t);            // smoothstep
   vec3 deep = vec3(0.012,0.030,0.095);  // 近黑蓝
@@ -42,10 +49,14 @@ precision highp float;
 in vec2 vUv;
 uniform sampler2D uField;
 uniform float uPeak;
-uniform vec3 uAmbient;;
+uniform float uTone;
+uniform vec3 uAmbient;
 out vec4 o;
+${glslTone()}
+${glslRamp('awAlarmRamp', ALARM_STOPS)}
 void main(){
   float v = max(0.0, texture(uField, vUv).r);
+  if (uTone > 0.5) { o = vec4(awAlarmRamp(awTone(v / uPeak)), 1.0); o.rgb *= uAmbient; return; }
   float t = clamp(v / uPeak, 0.0, 1.0);
   float e = t*t*(3.0-2.0*t);            // smoothstep
   o = vec4(vec3(1.0,0.22,0.10) * e * 0.9, 1.0);   // 危险红, 叠加在场光之上
@@ -73,7 +84,8 @@ void main(){
 const FS_ANT = `#version 300 es
 precision highp float;
 in vec2 vC; in float vLoad;
-uniform vec3 uAmbient;;
+uniform float uTone;
+uniform vec3 uAmbient;
 out vec4 o;
 void main(){
   vec3 empty = vec3(0.35,0.65,1.00);   // 空手:冷静蓝
@@ -84,9 +96,11 @@ void main(){
   float body = 1.0 - smoothstep(0.70, 1.0, r);
   float comet = clamp(exp(vC.x*3.2), 0.0, 1.0);            // 前亮后暗
   float tail = clamp(exp(vC.x*1.1)*0.45, 0.0, 1.0) * smoothstep(-0.5,-0.05,vC.x);
-  float a = body*(0.30+0.70*comet+tail);
-  o = vec4(col*a, 1.0);
-  o.rgb *= uAmbient;
+  float a = clamp(body*(0.30+0.70*comet+tail), 0.0, 1.0);
+  // 蚂蚁是**不透明的身体**, 不是灯: 新色阶下走普通 alpha 混合, 蚁群盖住走廊的光而不是往上加。
+  // (旧版 additive 让 5000 只蚁叠成一层蓝雾, 是光污染的另一半; Canvas2D/PNG 路径本来就是 alpha)
+  if (uTone > 0.5) { o = vec4(col * uAmbient, a); return; }
+  o = vec4(col*a*uAmbient, 1.0);
 }`;
 
 const VS_FOOD = `#version 300 es
@@ -103,7 +117,7 @@ void main(){
 const FS_FOOD = `#version 300 es
 precision highp float;
 in float vAmt;
-uniform vec3 uAmbient;;
+uniform vec3 uAmbient;
 out vec4 o;
 void main(){
   float d = length(gl_PointCoord - 0.5);
@@ -126,7 +140,7 @@ void main(){
 
 const FS_WALL = `#version 300 es
 precision highp float;
-uniform vec3 uAmbient;;
+uniform vec3 uAmbient;
 out vec4 o;
 void main(){
   // 方块点内轻微中心亮边缘暗, 让整面墙有一点厚度感
@@ -148,7 +162,7 @@ void main(){
 const FS_CIRCLE = `#version 300 es
 precision highp float;
 uniform vec4 uColor;
-uniform vec3 uAmbient;;
+uniform vec3 uAmbient;
 out vec4 o;
 void main(){ o = vec4(uColor.rgb*uAmbient, uColor.a); }`;
 
@@ -273,6 +287,12 @@ export class WebGL2Backend extends Backend {
       [this.pFood, gl.getUniformLocation(this.pFood, 'uAmbient')],
       [this.pWall, gl.getUniformLocation(this.pWall, 'uAmbient')],
       [this.pCircle, gl.getUniformLocation(this.pCircle, 'uAmbient')],
+    ]);
+    // 色阶模式(P2.3.1): 只有场/报警/蚂蚁三个程序有 uTone
+    this.locTone = new Map([
+      [this.pField, gl.getUniformLocation(this.pField, 'uTone')],
+      [this.pAlarm, gl.getUniformLocation(this.pAlarm, 'uTone')],
+      [this.pAnt, gl.getUniformLocation(this.pAnt, 'uTone')],
     ]);
     this.loc = {
       peak: gl.getUniformLocation(this.pField, 'uPeak'),
@@ -459,6 +479,8 @@ export class WebGL2Backend extends Backend {
     gl.uniformMatrix3fv(this.locView.get(p), false, this.uView);
     const la = this.locAmbient.get(p);
     if (la) gl.uniform3fv(la, this.amb);
+    const lt = this.locTone.get(p);
+    if (lt) gl.uniform1f(lt, values.toneMap);
   }
 
   // quad 顶点含世界尺寸；面板改 worldW/H 后（reset 重建 field）自动重建
@@ -668,8 +690,12 @@ export class WebGL2Backend extends Backend {
     // 半宽 3 逻辑像素(CSS) → 世界单位。quad 经世界变换,分辨率无关,不乘 dpr;
     // (uZoom/lineWidth 走设备像素才需要 dpr)。负重蚂蚁在 VS 内再放大
     gl.uniform1f(this.loc.antScale, 3.0 / (this._zoom ?? 0.5));
+    // 新色阶下蚂蚁按身体画(alpha 混合), 旧色阶下保持 additive 以逐位复现旧截图
+    if (values.toneMap > 0.5) gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    else gl.blendFunc(gl.ONE, gl.ONE);
     gl.bindVertexArray(this.vaoAnt);
     gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, n);
+    gl.blendFunc(gl.ONE, gl.ONE);
     gl.bindVertexArray(null);
   }
 

@@ -3,6 +3,7 @@
 
 import { Backend } from './backend.js';
 import { values } from '../core/config.js';
+import { tone, rampLut, lutIndex, FIELD_STOPS, ALARM_STOPS } from './palette.js';
 
 const PALETTE = (() => {
   // 信息素:暗底 → 蓝 → 金
@@ -15,6 +16,7 @@ const PALETTE = (() => {
   return stops;
 })();
 
+// 旧硬钳制色阶(toneMap=0 的复现路径)。新画面走 palette.js 的 tone+LUT, 见其顶部注释。
 function mapColor(v, peak) {
   const t = Math.min(1, Math.max(0, v / peak));
   let c = [6, 16, 40];
@@ -92,15 +94,30 @@ export class Canvas2DBackend extends Backend {
     const alarm = view.alarm && view.alarm.field ? view.alarm : null;
     const asrc = alarm ? alarm.field.buf : null;
     const apeak = alarm ? alarm.peak : 1;
+    // 色阶模式(P2.3.1): 软压缩走 palette.js 的 LUT(与 WebGL 同一份定义); 0 则保留旧的硬钳制 mapColor
+    const soft = values.toneMap > 0.5;
+    const flut = soft ? rampLut(FIELD_STOPS) : null;
+    const alut = soft ? rampLut(ALARM_STOPS) : null;
     for (let i = 0; i < gw * gh; i++) {
-      const col = mapColor(src[i], peak);
-      let r = col[0], gr = col[1], b = col[2];
+      let r, gr, b;
+      if (soft) {
+        const li = lutIndex(tone(src[i] / peak)) * 3;
+        r = flut[li]; gr = flut[li + 1]; b = flut[li + 2];
+      } else {
+        const col = mapColor(src[i], peak);
+        r = col[0]; gr = col[1]; b = col[2];
+      }
       if (asrc) {
         const av = asrc[i];
         if (av > 0) {
-          const t = Math.min(1, av / apeak);
-          const e = t * t * (3 - 2 * t);
-          r += 255 * e * 0.9; gr += 56 * e * 0.9; b += 26 * e * 0.9;  // Uint8Clamped 自动收窄
+          if (soft) {
+            const ai = lutIndex(tone(av / apeak)) * 3;
+            r += alut[ai]; gr += alut[ai + 1]; b += alut[ai + 2];
+          } else {
+            const t = Math.min(1, av / apeak);
+            const e = t * t * (3 - 2 * t);
+            r += 255 * e * 0.9; gr += 56 * e * 0.9; b += 26 * e * 0.9;  // Uint8Clamped 自动收窄
+          }
         }
       }
       if (amb) { r *= amb[0]; gr *= amb[1]; b *= amb[2]; }   // 对齐着色器的 o.rgb *= uAmbient

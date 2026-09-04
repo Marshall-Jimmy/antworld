@@ -24,7 +24,7 @@ export class Panel {
       if (['speedVar','turnVar','depositVar','pauseRate','pauseTime','nestDwell','missRecover'].includes(key)) return '真实感';
       if (['dayNight','dayLength','dayPhase','dayCurve','tempBase','tempSwing','tempMin','tempMax',
            'weather','stormEvery','stormLen','preStormRush','rainUrge','rainWash','windWash','rainCooling','rainShelter'].includes(key)) return '天气 / 昼夜';
-      if (['diffuseWeight','decayRate','peak','alarmDecay','alarmSplash','alarmPeak','emptyDeposit'].includes(key)) return '场';
+      if (['diffuseWeight','decayRate','peak','toneMap','alarmDecay','alarmSplash','alarmPeak','emptyDeposit'].includes(key)) return '场';
       return '世界';
     };
 

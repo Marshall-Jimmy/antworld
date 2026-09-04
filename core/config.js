@@ -77,7 +77,8 @@ export const SCHEMA = [
   // ---- 场 ----
   { key: 'diffuseWeight', default: 0.06, min: 0.001, max: 0.25, step: 0.001, desc: '3x3 扩散权重(越大越糊越快)' },
   { key: 'decayRate',     default: 0.97, min: 0.2,   max: 0.999,step: 0.005, desc: '信息素每秒衰减系数,1=永不消失' },
-  { key: 'peak',          default: 0.7,  min: 0.01,  max: 24,   step: 0.1,  desc: '渲染色阶:信息素达到该值视为最亮' },
+  { key: 'peak',          default: 0.35, min: 0.01,  max: 24,   step: 0.05, desc: '色阶参考浓度(半亮点): 该浓度=亮蓝, 其上每翻倍亮一档, 256× 才到白热上限' },
+  { key: 'toneMap',       default: 1,    min: 0,    max: 1,    step: 1,    desc: '色阶曲线: 0=旧线性+硬钳制(peak 以上整片烧成白, 走廊结构全丢) / 1=软压缩+有界色阶(光污染治理)' },
   { key: 'alarmDecay',    default: 0.95, min: 0.2,   max: 0.999,step: 0.005, desc: '报警信息素每秒衰减系数:比轨迹(0.97)挥发快,半衰期约13秒(P2.2)' },
   { key: 'alarmSplash',   default: 8,    min: 0,     max: 30,   step: 0.5,   desc: '每次捕杀原地喷溅的报警信息素量(死者是唯一的报警源,惊逃蚁只响应不释放)' },
   { key: 'alarmPeak',     default: 1.2,  min: 0.05,  max: 8,    step: 0.05,  desc: '报警渲染色阶:报警浓度达到该值视为最红' },

@@ -3,6 +3,7 @@
 import { PNG } from 'pngjs';
 import { writeFileSync, mkdirSync } from 'fs';
 import { values } from './core/config.js';
+import { tone, rampLut, lutIndex, FIELD_STOPS, ALARM_STOPS } from './render/palette.js';
 import { rng, hashSeed } from './core/rng.js';
 import { Field } from './sim/fields.js';
 import { World } from './sim/world.js';
@@ -114,24 +115,40 @@ for (let i = 0; i < W * H; i++) {
   data[i * 4] = bgCol[0]; data[i * 4 + 1] = bgCol[1]; data[i * 4 + 2] = bgCol[2]; data[i * 4 + 3] = 255;
 }
 // 信息素场（色阶 与 shader 一致; 报警信息素活动时叠危险红）
+const softTone = values.toneMap > 0.5;
+const flut = softTone ? rampLut(FIELD_STOPS) : null;
+const alut = softTone ? rampLut(ALARM_STOPS) : null;
 for (let gy = 0; gy < field.gh; gy++) {
   for (let gx = 0; gx < field.gw; gx++) {
     const v = field.buf[gy * field.gw + gx];
-    const t = Math.min(1, Math.max(0, v / values.peak));
-    const e = t * t * (3 - 2 * t);
-    let cr = 5 + (56 - 5) * smooth(t, 0, 0.55) + 255 * e * e * 1.8;
-    let cg = 13 + (140 - 13) * smooth(t, 0, 0.55) + 199 * e * e * 1.8;
-    let cb = 41 + (255 - 41) * smooth(t, 0, 0.55) + 71 * e * e * 1.8;
+    let cr, cg, cb;
+    if (softTone) {
+      // 软压缩有界色阶: 与 WebGL/Canvas2D 共用 palette.js。PNG 路径的 px() 是"覆盖"而非叠加,
+      // 所以这里要自己把背景加上, 才等价于着色器的 clear(bg*amb) + additive(ramp*amb)。
+      const li = lutIndex(tone(v / values.peak)) * 3;
+      cr = bgCol[0] + flut[li]; cg = bgCol[1] + flut[li + 1]; cb = bgCol[2] + flut[li + 2];
+    } else {
+      const t = Math.min(1, Math.max(0, v / values.peak));
+      const e = t * t * (3 - 2 * t);
+      cr = 5 + (56 - 5) * smooth(t, 0, 0.55) + 255 * e * e * 1.8;
+      cg = 13 + (140 - 13) * smooth(t, 0, 0.55) + 199 * e * e * 1.8;
+      cb = 41 + (255 - 41) * smooth(t, 0, 0.55) + 71 * e * e * 1.8;
+    }
     // 报警红(P2.2): 与 canvas2d 同一套合成(红加得最多)
     if (world.predator) {
       const av = alarmField.buf[gy * field.gw + gx];
       if (av > 0) {
-        const at = Math.min(1, av / values.alarmPeak);
-        const ae = at * at * (3 - 2 * at);
-        cr += 255 * ae * 0.9; cg += 56 * ae * 0.9; cb += 26 * ae * 0.9;
+        if (softTone) {
+          const ai = lutIndex(tone(av / values.alarmPeak)) * 3;
+          cr += alut[ai]; cg += alut[ai + 1]; cb += alut[ai + 2];
+        } else {
+          const at = Math.min(1, av / values.alarmPeak);
+          const ae = at * at * (3 - 2 * at);
+          cr += 255 * ae * 0.9; cg += 56 * ae * 0.9; cb += 26 * ae * 0.9;
+        }
       }
     }
-    const col = tintArr([cr, cg, cb].map(v => Math.min(255, v))); // Uint8Array 赋值是 mod 256 回绕, 饱和核心必须显式 clamp
+    const col = tintArr([cr, cg, cb].map(x => Math.min(255, x))); // Uint8Array 赋值是 mod 256 回绕, 饱和核心必须显式 clamp
     // 画该格中心的一个小块
     const cx = (gx + 0.5) * field.cellSize, cy = (gy + 0.5) * field.cellSize;
     for (let dy = 0; dy < field.cellSize * SCALE; dy++) {
