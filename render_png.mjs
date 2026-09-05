@@ -4,7 +4,7 @@ import { PNG } from 'pngjs';
 import { writeFileSync, mkdirSync } from 'fs';
 import { values } from './core/config.js';
 import { tone, rampLut, lutIndex, rampColor, FIELD_STOPS, ALARM_STOPS } from './render/palette.js';
-import { PAPER, TRAIL_STOPS, ALARM_INK_STOPS, inkCoverage, antCoverage, antLod, antVar, CHITIN, CRUMB_RGB, foodCoverage, foodRadius, FOOD_HULL, FOOD_FLESH } from './render/look.js';
+import { PAPER, TRAIL_STOPS, ALARM_INK_STOPS, inkCoverage, antCoverage, antLod, antVar, CHITIN, CRUMB_RGB, SHEEN_GAIN, foodCoverage, foodRadius, FOOD_HULL, FOOD_FLESH } from './render/look.js';
 import { rng, hashSeed } from './core/rng.js';
 import { Field } from './sim/fields.js';
 import { World } from './sim/world.js';
@@ -310,7 +310,7 @@ if (antStyleOn) {
     const bl = Lw * (1 + (v - 0.5) * 0.24 * av);
     const ch = CHITIN[v < 0.3333333 ? 0 : (v < 0.6666667 ? 1 : 2)];
     const br = ch[0] * 255, bgv = ch[1] * 255, bb = ch[2] * 255;
-    const hr = (ch[0] + mid[0] * 0.9) * 255, hg = (ch[1] + mid[1] * 0.9) * 255, hb = (ch[2] + mid[2] * 0.9) * 255;
+    const hr = (ch[0] + mid[0] * SHEEN_GAIN) * 255, hg = (ch[1] + mid[1] * SHEEN_GAIN) * 255, hb = (ch[2] + mid[2] * SHEEN_GAIN) * 255;
     const cs = Math.cos(colony.theta[i]), sn = Math.sin(colony.theta[i]);
     const carry = colony.load[i] > 0.3;
     const hx = bl * 0.72, hy = bl * 0.42;
@@ -319,7 +319,7 @@ if (antStyleOn) {
         const lx = (dx * cs + dy * sn) / bl, ly = (dy * cs - dx * sn) / bl;
         const c = antCoverage(lx, ly, lod);
         if (c.body > 0) {
-          const k = c.sheen > 1 ? 1 : c.sheen;               // 腹部受光 = GLSL 的 ch + awChitin[1]*0.9*sheen
+          const k = c.sheen > 1 ? 1 : c.sheen;               // 腹部受光 = GLSL 的 ch + awChitin[1]*awSheenGain*sheen
           scr[0] = (br + (hr - br) * k) * am0;
           scr[1] = (bgv + (hg - bgv) * k) * am1;
           scr[2] = (bb + (hb - bb) * k) * am2;

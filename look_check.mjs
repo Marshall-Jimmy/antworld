@@ -48,7 +48,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { PNG } from 'pngjs';
 import { values, SCHEMA, groupOf } from './core/config.js';
-import { PAPER, TRAIL_STOPS, ALARM_INK_STOPS, inkCoverage, ANT_BODY, ANT_EXTRA, ANT_CRUMB, ANT_U, ANT_V, CHITIN, CRUMB_RGB, antCoverage, antLod, antVar, FOOD, foodRadius, foodBoundary, foodCoverage, glslAnt, glslFood, glslInk } from './render/look.js';
+import { PAPER, TRAIL_STOPS, ALARM_INK_STOPS, inkCoverage, ANT_BODY, ANT_EXTRA, ANT_CRUMB, ANT_SHEEN, SHEEN_GAIN, ANT_U, ANT_V, CHITIN, CRUMB_RGB, antCoverage, antLod, antVar, FOOD, foodRadius, foodBoundary, foodCoverage, glslAnt, glslFood, glslInk } from './render/look.js';
 import { shaderSources, quadVertices } from './render/webgl2.js';
 
 const NL = String.fromCharCode(10);
@@ -278,7 +278,8 @@ if (want('glsl')) {
   ok('A14b 墨覆盖 GLSL 的幂与封顶与 JS 一致', gi.includes('1.6') && gi.includes('0.94'), gi.slice(0, 34) + '...');
   const segs = ANT_EXTRA.reduce((s, e) => s + (e.pts.length - 1), 0);
   const nP = (ga.match(/awCovP\(p,/g) || []).length, nE = (ga.match(/awCovE\(p,/g) || []).length;
-  ok('A14b 蚁体 GLSL 段数 = 形状表条数', nP === segs && nE === ANT_BODY.length + 1, 'polys=' + nP + '/' + segs + ' ellipses=' + nE + '/' + (ANT_BODY.length + 1));
+  // +2 = 高光带 + 粮粒(P2.4d: 高光带从前是「复用腹节那个椭圆」, 所以旧写法只数到 +1)
+  ok('A14b 蚁体 GLSL 段数 = 形状表条数', nP === segs && nE === ANT_BODY.length + 2, 'polys=' + nP + '/' + segs + ' ellipses=' + nE + '/' + (ANT_BODY.length + 2));
 }
   console.log('-- A16 场 quad 几何 + 混合约定(本轮抓到的真 bug) --');
   const src = readFileSync('./render/webgl2.js', 'utf8');
@@ -310,11 +311,26 @@ if (want('shape')) {
   let mx = 0, my = 0;
   for (const e of ANT_EXTRA) for (const p of e.pts) { mx = Math.max(mx, Math.abs(p[0]) + e.w); my = Math.max(my, Math.abs(p[1]) + e.w); }
   for (const e of ANT_BODY) { mx = Math.max(mx, Math.abs(e.x) + e.rx); my = Math.max(my, Math.abs(e.y) + e.ry); }
-  mx = Math.max(mx, ANT_CRUMB.x + ANT_CRUMB.rx);
+  for (const e of [ANT_CRUMB, ANT_SHEEN]) { mx = Math.max(mx, Math.abs(e.x) + e.rx); my = Math.max(my, Math.abs(e.y) + e.ry); }
   ok('A6 轮廓四边形盖住触角尖与叼的粮', mx <= ANT_U && my <= ANT_V, 'xMax=' + mx.toFixed(3) + '/' + ANT_U + ' yMax=' + my.toFixed(3) + '/' + ANT_V);
   const gs = ANT_BODY[0], hd = ANT_BODY[ANT_BODY.length - 1];
-  ok('A6 高光只在腹部', antCoverage(gs.x, gs.y, 1).sheen > 0.5 && antCoverage(hd.x, hd.y, 1).sheen < 0.02,
-    'sheen(gaster)=' + antCoverage(gs.x, gs.y, 1).sheen.toFixed(3) + ' sheen(head)=' + antCoverage(hd.x, hd.y, 1).sheen.toFixed(4));
+  // A6 高光(P2.4d 重述 + 加严 · 为什么允许重述见 METRICS P2.4d §1, 不是为了让它变绿):
+  //   旧写法拿「腹节中心 sheen>0.5」当「高光只在腹部」的证据。高光从「整节腹部」改成「一条窄带」之后,
+  //   腹节中心本身已经不在带上(0.403) ⇒ 旧写法会把一次改好误报成改坏。这一条真正要钉的是**空间归属**,
+  //   所以拆成三问: 带在自己的中心满值 / 不许越出体外 / 头部必须为零;
+  //   再加两条旧判据看不见的: 腹节里离带最远的那一角必须无光(否证「又涨回整节肚子」) + 带面积占腹节 <0.30。
+  const shBand = antCoverage(ANT_SHEEN.x, ANT_SHEEN.y, 1).sheen;
+  const shHead = antCoverage(hd.x, hd.y, 1).sheen;
+  const shFar = antCoverage(gs.x - gs.rx * 0.62, gs.y + gs.ry * 0.62, 1).sheen;
+  const shOut = antCoverage(gs.x, gs.y + gs.ry * 1.35, 1).sheen;          // 体外: 腹部上缘之外一点
+  const shArea = (ANT_SHEEN.rx * ANT_SHEEN.ry) / (gs.rx * gs.ry);        // π 相消
+  ok('A6 高光带中心满值', shBand > 0.9, 'sheen(band)=' + shBand.toFixed(3));
+  ok('A6 高光不越出体外', shOut < 0.02, 'sheen(体外)=' + shOut.toFixed(4));
+  ok('A6 高光不涂满腹节(离带最远的腹节角必须无光)', shFar < 0.05 && shArea < 0.30,
+    'sheen(腹节远角)=' + shFar.toFixed(4) + ' 带/腹节面积=' + shArea.toFixed(3));
+  ok('A6 高光只在腹部(头部为零)', shHead < 0.02, 'sheen(head)=' + shHead.toFixed(4));
+  ok('A6 高光增益 ≤ 0.5(旧值 0.9 会把虫体画成两种颜色)', SHEEN_GAIN <= 0.5 && SHEEN_GAIN > 0,
+    'SHEEN_GAIN=' + SHEEN_GAIN);
   ok('A6 叼的粮在头前缘之外(不是全身变色)', ANT_CRUMB.x - ANT_CRUMB.rx > hd.x, 'crumbBack=' + (ANT_CRUMB.x - ANT_CRUMB.rx).toFixed(3) + ' headX=' + hd.x);
   ok('A6 三段身体 + 腹柄细腰(膜翅目读数)', ANT_BODY.length >= 4 && ANT_BODY[1].rx < 0.08 && ANT_BODY[0].rx > ANT_BODY[3].rx,
     'parts=' + ANT_BODY.length + ' petioleRx=' + ANT_BODY[1].rx);

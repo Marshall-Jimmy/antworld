@@ -20,11 +20,15 @@
     }
     #hud {
       position: fixed; top: 10px; left: 10px;
-      font: 12px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
-      color: #9fb6c9; background: rgba(6,10,22,0.72);
-      border: 1px solid #1c2a40; padding: 6px 10px;
+      font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
+      color: #9fb6c9; background: rgba(6,10,22,0.78);
+      border: 1px solid #1c2a40; border-radius: 5px; padding: 5px 9px;
       pointer-events: none; white-space: pre; user-select: none;
-      backdrop-filter: blur(2px);
+      /* P2.4d 倍速性能: 删掉 backdrop-filter: blur(2px)。它不是装饰 —— 一块跟随内容的模糊层要求
+         合成器每帧把 HUD 矩形下方的【整块画面】读进纹理、卷积、再贴回去, 而这发生在 frame_check
+         量不到的合成阶段(JS 侧只看得见 0.47 ms/帧, 差的那 4–7 ms 全在 GPU/合成里)。画面现在是
+         白纸底 + 墨色走廊, 文字对比度本来就够(加模糊是为了旧版那条发光走廊), 于是这份每帧开销
+         买到的东西已经没人需要了。同一条理由适用于 .tp-dfwv: 它早就是 backdrop-filter: none。 */
     }
     /* P2.4b 分层 HUD: 三层各一个 div, 颜色按「多久看一次一次它」分档, 不是按实现者喜好。
        l0 = 每秒都在变的实时量(最亮) / l1 = 环境与曲线(次亮) / l2 = 操作提示与 seed(最暗, 默认藏)。
@@ -41,6 +45,34 @@
       padding: 4px 12px; opacity: 0; transition: opacity .25s; pointer-events: none;
     }
     .tp-dfwv { backdrop-filter: none !important; }
+    /* P2.4d · 调试面板密度整改 II。P2.4c 把 label 缩短 + 默认收起, 治的是【一屏塞了多少字】;
+       这一轮治两件 P2.4c 碰不到的事:
+       ① 行与行挤在一起(出厂 unit-size 20px / 垂直 padding 4px, 11px 字号下像一条条形码)
+          ⇒ 走 tweakpane 自己的 CSS 变量放大行高与间距, 不去覆盖它的布局规则;
+       ② 91 行参数里【找一个数】只能挨个点夹子 ⇒ 加一个过滤框(见 ui/panel.js:applyFilter)。
+       数值列从 160px 收到 118px 不是把数字藏小: 它对面那一侧原来只剩 60 多像素,
+       一句「信息素场分辨率」被截成「信息素场分辨…」—— 密度问题的另一半是【读不全】。 */
+    :root {
+      --tp-blade-value-width: 118px;
+      --tp-container-vertical-padding: 6px;
+      --tp-container-unit-spacing: 5px;
+      --tp-container-unit-size: 21px;
+      --tp-blade-horizontal-padding: 5px;
+    }
+    .tp-rotv { font-size: 11.5px; }
+    /* 点「展开全部参数」(91 行)之后面板会顶出视口, 而它没有滚动条 ⇒ 下面的行永远够不着。
+       这是「密度」的另一面: 不是行太挤, 是根本装不下。 */
+    .tp-dfwv { max-height: calc(100vh - 20px); overflow-y: auto; overscroll-behavior: contain; }
+    .tp-filter { display: flex; align-items: center; gap: 5px; padding: 1px 4px 7px; }
+    .tp-filter_i {
+      flex: 1; min-width: 0; box-sizing: border-box; font: inherit; line-height: 1.6;
+      padding: 2px 6px; color: #c3c5cb;
+      background: rgba(187,188,196,0.12); border: 1px solid rgba(187,188,196,0.22);
+      border-radius: 3px;
+    }
+    .tp-filter_i:focus { outline: none; border-color: rgba(187,188,196,0.55); }
+    .tp-filter_i::-webkit-search-cancel-button { -webkit-appearance: none; }
+    .tp-filter_n { flex: 0 0 auto; font-size: 10px; opacity: .55; }
   </style>
 </head>
 <body>

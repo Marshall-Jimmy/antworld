@@ -193,6 +193,24 @@ function driveOld(cfg) {
   ok('T5d 达成 % 恒在 0..100(超机器时不报虚高)', bounded);
   const browser = paceText(mk(64, 160));
   ok('T5e 本轮浏览器初稿读数留档(160 步/秒 → 2.67×, 达成 4%)', browser.includes('=2.67×') && browser.includes('达成 4%'), browser);
+  // ---- T5f-T5h 上限那一段(P2.4d 新增读数的三条自证) ----
+  // 为什么要有 T5f: 「本机上限」是一个【算出来的数】, 而它的两个输入都来自 tick 里的计时。
+  // 如果哪天有人在重构里把计时写死成 0, 这一段会【静默消失】—— 页面上看不出任何异常,
+  // 而丢掉的是「这台机器到底能跑几倍」这句唯一能回答用户问题的话。所以先钉它非零。
+  const d64 = drive({ timeScale: 64, costMs: 7, idleMs: 0.5, renderMs: 6, frames: 120 });
+  const lp = d64.loop;
+  ok('T5f tick 墙钟分解非零且 tick ≥ sim(上限那一段的输入是活的)',
+    lp.simMs > 1 && lp.tickMs >= lp.simMs, 'sim=' + f3(lp.simMs) + ' ms tick=' + f3(lp.tickMs) + ' ms');
+  const withCeil = paceText(lp);
+  const ceilWant = lp.tps * (lp.tickMs / lp.simMs) * lp.step;
+  const overWant = Math.round(100 * (1 - lp.simMs / lp.tickMs));
+  ok('T5g 上限算式: 出画占比与倍速上限都由 tick/sim 现算(独立复算一遍)',
+    withCeil.includes('出画JS占 ' + overWant + '%') && withCeil.includes('本机上限 ' + ceilWant.toFixed(1) + '×'),
+    withCeil + '   ← 期望含 出画JS占 ' + overWant + '% / 上限 ' + ceilWant.toFixed(1) + '×');
+  ok('T5h 上限不许低于已达到的等效倍速(比值退化时不报虚低)', ceilWant >= lp.tps * lp.step,
+    '上限 ' + ceilWant.toFixed(2) + '× vs 已达 ' + (lp.tps * lp.step).toFixed(2) + '×');
+  const quick = mk(4, 240); quick.simMs = 0.4; quick.tickMs = 16.6;
+  ok('T5i 机器追得上时不报上限(sim 太小时那个比值没有意义)', !paceText(quick).includes('上限'), paceText(quick));
 }
 
 rep.push('');

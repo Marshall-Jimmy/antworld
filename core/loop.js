@@ -51,6 +51,10 @@ export class Loop {
     this.minRenderMs = 0;     // 渲染节流门槛(1× 与暂停=0 ⇒ 出厂路径每帧都画)
     this._lastRender = 0;
     this._tpsT = 0; this._tpsN = 0;
+    // 一个 tick 的墙钟分解(P2.4d): simMs = 仿真占掉多少, tickMs = 整个 tick 多少。
+    // 为什么要量这个而不是只量 fps: 倍速的【天花板】= 1/单步成本, 而 (tickMs - simMs) 就是被出画与
+    // 合成吃掉的那一份 —— 它是「64× 只跑到 5×」里唯一还能买回来的部分。两者都取 EMA(单帧噪声太大)。
+    this.simMs = 0; this.tickMs = 0;
     this.forceRender = null;  // () => bool: 录像期间必须每帧出画(见 app.js)
   }
 
@@ -104,6 +108,7 @@ export class Loop {
       n++;
     }
     if (this.accum > this.accumCap) this.accum = this.accumCap;
+    const simMs = performance.now() - t0;   // 每 tick 多一次 performance.now(), 换掉一整类猜测
 
     // tps 的窗口用真实时间 raw(未钳位), 见文件头 ③。
     this._tpsN += n; this._tpsT += raw;
@@ -115,6 +120,10 @@ export class Loop {
       this.fps = this.fps * 0.95 + (1 / Math.max(since / 1000, 1e-4)) * 0.05;
       this._lastRender = now;
     }
+    // EMA 0.9/0.1: 与 fps 同一套平滑系数。放在 tick 最末尾 ⇒ tickMs 含仿真 + 出画 + 提交前的全部 JS。
+    const tickMs = performance.now() - t0;
+    this.simMs = this.simMs * 0.9 + simMs * 0.1;
+    this.tickMs = this.tickMs * 0.9 + tickMs * 0.1;
     this._raf = requestAnimationFrame(this._tick);
   }
 }
@@ -130,5 +139,17 @@ export function paceText(l) {
   const equiv = l.tps * l.step;                    // 等效倍速 = 一秒墙钟推进了多少秒仿真时间
   const need = l.demandTps();                      // 配得上当前倍速所需的步/秒 = 倍速 / step
   const pct = Math.round(100 * Math.min(1, l.tps / need));
-  return `仿真 ${l.tps.toFixed(0)} 步/秒=${equiv.toFixed(2)}× (需 ${need.toFixed(0)} 步/秒≈${ts}×, 达成 ${pct}%)`;
+  let s = `仿真 ${l.tps.toFixed(0)} 步/秒=${equiv.toFixed(2)}× (需 ${need.toFixed(0)} 步/秒≈${ts}×, 达成 ${pct}%)`;
+  // 上限(P2.4d): 「达成 8%」只说了问题的一半, 另一半是【这台机器到底能跑几倍】—— 没有后一句,
+  // 用户无法区分「代码写得慢」与「物理上就这么多 CPU」。一个 tick = 仿真 + 出画,
+  // 所以把出画压到 0 能到的步率 = 步/秒 × tick/sim, 再乘 step 换成倍速。
+  // ⚠ tickMs 量的是【JS 的一个 tick】, 浏览器的绘制与合成发生在 tick 之外 ⇒ 「出画占」只是 JS 那一份,
+  //   它不含 GPU 填充率/合成。这正是为什么 blur 与 renderScale 只能靠浏览器 A/B 定案, 这里报不了它们。
+  // 门槛 sim>0.5 ms: 没跑满预算的档位(例如 4× 在够快的机器上)simMs 会趋近 0, 那个比值没有意义。
+  const sim = l.simMs || 0, tick = l.tickMs || 0;
+  if (sim > 0.5 && tick >= sim) {
+    const ceil = Math.max(equiv, l.tps * (tick / sim) * l.step);
+    s += ` · 出画JS占 ${Math.round(100 * (1 - sim / tick))}% ⇒ 本机上限 ${ceil.toFixed(1)}×`;
+  }
+  return s;
 }

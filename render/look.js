@@ -70,6 +70,14 @@ export const CRUMB_RGB = [0.870, 0.760, 0.400];
 export const ANT_U = 0.70, ANT_V = 0.40;
 // 体色: 近黑暖褐。每只蚁按 uid 哈希在 CHITIN[0..2] 之间取一档(个体差异=真实感的最低要求, P1.8.5)
 export const CHITIN = [[0.085, 0.070, 0.062], [0.150, 0.115, 0.085], [0.235, 0.160, 0.100]];
+// 腹部高光带(P2.4d 整改): 旧写法直接拿腹部大椭圆的 coverage 当高光, 而 coverage 在 0.74 倍半径内
+// 恒等于 1 ⇒ 放大看是一整块扁平浅棕, 比虫体本身还抢眼(用户: 太丑陋)。真实工蚁的 gaster 是一颗
+// 光滑的胶囊, 从上方看反光是一条**沿体轴的窄带**, 只占腹部一小半, 而且是连续衰减不是硬边。
+// 位置取偏背侧(局部 -y)半格: 高光压在轮廓正中会读成「一条白线」而不是「一个圆肚子」。
+export const ANT_SHEEN = { x: -0.286, y: -0.044, rx: 0.126, ry: 0.050 };
+// 增益从 0.9 降到 0.42: 三档几丁质里最亮那档(0.235)加 0.9 倍中档(0.150)会得到 0.37 的浅棕,
+// 那已经不是「壳的反光」而是「另一种颜色的虫子」。0.42 倍下最亮档落在 0.30, 仍比纸暗两个数量级。
+export const SHEEN_GAIN = 0.42;
 
 // ---- 参考实现(JS): PNG 路径逐像素用它, GLSL 由同一批表生成 ⇒ 两条路径不可能长成两个样子 ----
 const TAU = Math.PI * 2;
@@ -107,8 +115,8 @@ export function antCoverage(x, y, lod) {
   for (let i = 0; i < ANT_BODY.length; i++) {
     const c = covEllipse(x, y, ANT_BODY[i]);
     if (c > body) body = c;
-    if (i === 0 && c > sheen) sheen = c;
   }
+  sheen = covEllipse(x, y, ANT_SHEEN);   // 高光带是独立形状, 不再等于整节腹部的 coverage
   if (lod >= 1) {
     for (let i = 0; i < ANT_EXTRA.length; i++) {
       const e = ANT_EXTRA[i];
@@ -196,10 +204,11 @@ export function glslAnt() {
        'return 1.0-smoothstep(w*0.28,w*0.5,length(pa-ba*t)); }\n';
   s += 'void awAnt(vec2 p, float lod, out float body, out float crumb, out float sheen){\n';
   s += '  body=0.0; crumb=0.0; sheen=0.0;\n';
-  ANT_BODY.forEach((c, i) => {
+  ANT_BODY.forEach((c) => {
     s += `  { float c=awCovE(p, vec2(${c.x.toFixed(3)}, ${c.y.toFixed(3)}), vec2(${c.rx.toFixed(3)}, ${c.ry.toFixed(3)}));` +
-         ` body=max(body,c);` + (i === 0 ? ' sheen=c;' : '') + ' }\n';
+         ` body=max(body,c); }\n`;
   });
+  s += `  sheen=awCovE(p, vec2(${ANT_SHEEN.x.toFixed(3)}, ${ANT_SHEEN.y.toFixed(3)}), vec2(${ANT_SHEEN.rx.toFixed(3)}, ${ANT_SHEEN.ry.toFixed(3)}));\n`;
   for (const e of ANT_EXTRA) {
     // 逐条 fold 成 body=max(body,段) —— 每句恰好两个实参。曾想把多段拼成一行, 写成
     // seg.join(NL): 分隔符落在括号里成了「无实参」, JS 于是用默认分隔符逗号,
@@ -220,7 +229,7 @@ export function glslAnt() {
 export function glslChitin() {
   const f = (v) => v.toFixed(4);
   const c = CHITIN.map((t) => `vec3(${t.map(f).join(',')})`).join(', ');
-  return `const vec3 awChitin[3] = vec3[3](${c});\nconst vec3 awCrumb = vec3(${CRUMB_RGB.map(f).join(',')});\n` +
+  return `const vec3 awChitin[3] = vec3[3](${c});\nconst float awSheenGain = ${SHEEN_GAIN.toFixed(3)};\nconst vec3 awCrumb = vec3(${CRUMB_RGB.map(f).join(',')});\n` +
     `const vec3 awHull = vec3(${FOOD_HULL.map(f).join(',')});\nconst vec3 awFlesh = vec3(${FOOD_FLESH.map(f).join(',')});`;
 }
 export function glslInkRamp(fnName, stops) {
@@ -282,11 +291,10 @@ export function antPaths() {
     }
     return p;
   };
-  // 腹部高光: 取 gaster 椭圆缩到 0.6 的那块 —— GLSL 里 sheen 在中心为 1、到 0.74 半径处归零,
-  // 这里用一块实心浅色斑做等价近似(兜底路径优先看帧率, 见其顶部注释)。
+  // 腹部高光带: 与 GLSL/JS 参考实现同一张 ANT_SHEEN 表(三条路径不可能长成三个样子)。
+  // 这里仍是一块实心斑而不是连续衰减 —— 兜底路径优先保帧率, 见本文件顶部注释 3。
   const sheen = new Path2D();
-  const gs = ANT_BODY[0];
-  sheen.ellipse(gs.x, gs.y, gs.rx * 0.60, gs.ry * 0.58, 0, 0, TAU);
+  sheen.ellipse(ANT_SHEEN.x, ANT_SHEEN.y, ANT_SHEEN.rx, ANT_SHEEN.ry, 0, 0, TAU);
   const crumb = new Path2D();
   crumb.ellipse(ANT_CRUMB.x, ANT_CRUMB.y, ANT_CRUMB.rx, ANT_CRUMB.ry, 0, 0, TAU);
   _paths = { body, crumb, sheen, e1: mk(1), e2: mk(2), w1: 0.030, w2: 0.029 };

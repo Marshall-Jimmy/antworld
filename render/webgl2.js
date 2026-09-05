@@ -148,7 +148,7 @@ void main(){
     // 三档几丁质按 uid 哈希分桶(与 JS 路径的 floor(v*3) 同一分界) + 腹部一点高光
     vec3 ch = mix(awChitin[0], awChitin[1], step(0.3333333, vVar));
     ch = mix(ch, awChitin[2], step(0.6666667, vVar));
-    vec3 rgb = mix(ch + awChitin[1] * 0.9 * clamp(sheen, 0.0, 1.0), awCrumb, ca);
+    vec3 rgb = mix(ch + awChitin[1] * awSheenGain * clamp(sheen, 0.0, 1.0), awCrumb, ca);
     o = vec4(rgb * uAmbient, alpha);
     return;
   }
@@ -611,9 +611,11 @@ export class WebGL2Backend extends Backend {
     // quad 内容变了,VAO 不用动(只引用 buffer 对象)
   }
 
-  resize(w, h) {
+  // scale = 出画分辨率系数(P2.4d 倍速性能), 1 = 出厂。它只动 backing store 的像素数, 不动 CSS 尺寸
+  // ⇒ 鼠标/相机换算(全走 clientWidth 与 CSS px)一个字都不受影响。
+  resize(w, h, scale = 1) {
     const gl = this.ctx; if (!gl) return;
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2) * (scale > 0 ? scale : 1);
     const pw = Math.max(1, Math.round(w * this.dpr));
     const ph = Math.max(1, Math.round(h * this.dpr));
     if (this.canvas.width !== pw || this.canvas.height !== ph) {

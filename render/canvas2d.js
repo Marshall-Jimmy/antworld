@@ -4,7 +4,7 @@
 import { Backend } from './backend.js';
 import { values } from '../core/config.js';
 import { tone, rampLut, lutIndex, FIELD_STOPS, ALARM_STOPS } from './palette.js';
-import { PAPER, TRAIL_STOPS, ALARM_INK_STOPS, CHITIN, CRUMB_RGB, inkCoverage, antLod, antVar, antPaths, foodBoundary, foodRadius, FOOD_HULL, FOOD_FLESH } from './look.js';
+import { PAPER, TRAIL_STOPS, ALARM_INK_STOPS, CHITIN, CRUMB_RGB, SHEEN_GAIN, inkCoverage, antLod, antVar, antPaths, foodBoundary, foodRadius, FOOD_HULL, FOOD_FLESH } from './look.js';
 import { effPeak } from './exposure.js';
 
 const PALETTE = (() => {
@@ -60,8 +60,9 @@ export class Canvas2DBackend extends Backend {
 
   setCamera(cx, cy, zoom) { this.cx = cx; this.cy = cy; this.zoom = zoom; }
 
-  resize(w, h) {
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+  // scale 语义与 render/webgl2.js:resize 完全一致(出画分辨率系数, 1 = 出厂)
+  resize(w, h, scale = 1) {
+    this.dpr = Math.min(window.devicePixelRatio || 1, 2) * (scale > 0 ? scale : 1);
     const pw = Math.max(1, Math.round(w * this.dpr));
     const ph = Math.max(1, Math.round(h * this.dpr));
     if (this.canvas.width !== pw || this.canvas.height !== ph) {
@@ -289,7 +290,7 @@ export class Canvas2DBackend extends Backend {
     for (let b = 0; b < 3; b++) {
       const ch = CHITIN[b];
       shade[b] = rgba(c255(ch), 0.96, amb);
-      sheen[b] = rgba(c255([ch[0] + CHITIN[1][0] * 0.9, ch[1] + CHITIN[1][1] * 0.9, ch[2] + CHITIN[1][2] * 0.9]), 0.80, amb);
+      sheen[b] = rgba(c255([ch[0] + CHITIN[1][0] * SHEEN_GAIN, ch[1] + CHITIN[1][1] * SHEEN_GAIN, ch[2] + CHITIN[1][2] * SHEEN_GAIN]), 0.80, amb);
     }
     const crumbCol = rgba(c255(CRUMB_RGB), 0.98, amb);
     if (!this._inkBuf || this._inkCap < n) {

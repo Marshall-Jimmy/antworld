@@ -7,10 +7,15 @@
 //      `white-space:pre` 布局就得重排一次——倍速时这是纯浪费。
 //  于是: 三层 + 每层各自缓存指纹 + 按节流刷新。数字不动的那层一个 DOM 写操作都不发生。
 //
-// 三层的定义(默认停在「常用」, 按 H 循环 精简→常用→全部→精简):
-//   L0 常驻  : 一屏话: 帧率 / 后端 / 倍速 / 种群 / 负重 / 卸货率
-//   L1 常用  : + 昼夜天气一行(带活性曲线) + 经济曲线一行(带滑窗 sparkline)
-//   L2 全部  : + 曝光 / 事件计数 / 工具与墙 / 操作提示 / seed / 当前预设
+// 三层的定义(按 H 循环 精简→常用→全部→精简)。P2.4d 把【默认档】从「常用」降到「精简」:
+//   用户第二次点名「密度太大」, 指的就是这块常驻 4 行的板子 —— 而 HUD 是画面上唯一一块
+//   【不许交互、又永远在场】的东西, 它的尺寸该由「我每秒要看它几次」决定, 不是由
+//   「实现者能算出多少个数」决定。于是按读频重排:
+//   L0 常驻(默认, 2 行): 帧率/后端/倍速/达成 + 种群/负重/卸货 —— 每秒都在看的那些
+//   L1 常用(+1~2 行)   : 昼夜天气一行(带活性曲线) + 经济曲线第一条(卸货·负重)
+//   L2 全部(+4 行)     : 经济曲线第二条(空手返巢·存粮) / 曝光 / 事件计数 / 工具与墙 /
+//                        操作提示 / seed / 当前预设 / 跟拍行
+// 两条曲线原来都在 L1: 曲线是【回头看一下趋势】的东西, 占的却是最宽的两行 ⇒ 第二条降到 L2。
 import { spark } from '../core/stats.js';
 
 const LEVEL_NAMES = ['精简', '常用', '全部'];
@@ -29,7 +34,7 @@ export class Hud {
     this.l0 = mk('l0');
     this.l1 = mk('l1');
     this.l2 = mk('l2');
-    this.level = 1;
+    this.level = 0;                 // P2.4d: 默认「精简」两行(旧默认「常用」四行 = 用户点名的那份密度)
     this._cache = { l0: '', l1: '', l2: '' };
     this._t = 0;
     this._interval = 0.15;     // 秒: HUD 刷新节流。人眼读字用不着 60Hz, 倍速时更该省这份预算给 sim
@@ -70,6 +75,7 @@ export class Hud {
     const f = (v, n = 1) => (Number.isFinite(v) ? v.toFixed(n) : '—');
     const l0 = [
       `fps ${c.fps.toFixed(0)} · ${c.backend} · ${c.speed}` +
+        (c.renderPct ? ` · 画质 ${c.renderPct}` : '') +
         (c.preset && c.preset !== 'default' ? ` · ${c.presetName}` : '') +
         (c.pace ? ` · ${c.pace}` : ''),
       c.survOn
@@ -82,11 +88,11 @@ export class Hud {
       l1.push(`${c.actSpark} 活性 ${f(c.act, 2)}×  (最近 ${c.actSpan} 秒)`);
     }
     l1.push(`经济 ${c.sparkDel} 卸货 · ${c.sparkLoad} 负重`);
-    l1.push(`     ${c.sparkAb} 空手返巢 · ${c.sparkFood} 存粮`);
     const l2 = [
+      `     ${c.sparkAb} 空手返巢 · ${c.sparkFood} 存粮`,
       `曝光 ${c.effPeak} · 感知 ${c.sensorMode} · 速度档 ${c.speedLevel} (1/2/3/4, 0=暂停) · 工具 ${c.tool} (F/W/E/P)`,
       `墙 ${c.walls} 格(X 清) · 捕食者 ${c.predator} · 卸货累计 ${c.delTot} · 弃货 ${c.tot} · 空手返巢 ${c.abTot} · 被捕杀 ${c.killTot}`,
-      `左键 检视/放食物/画墙 · 右键 移除/平移 · 滚轮 缩放 · 点蚁自动跟拍(G 停) · V 录像 · H 界面详略 · M 曲线`,
+      `左键 检视/放食物/画墙 · 右键 移除/平移 · 滚轮 缩放 · 点蚁自动跟拍(G 停) · V 录像 · H 界面详略 · M 曲线 · Q 画质 · / 过滤`,
       `seed ${c.seed} · 预设 ${c.preset} · 参数 ${c.paramCount} 项已偏离出厂`,
       // 生死开着时经济那一行不够用: 出生/死亡/储备三本账必须同屏(它们互相咬合)
       c.survOn ? `经济入库 ${c.inflow} · 取食 ${c.eaten} · 产蚁耗 ${c.birthFood} · 溢出 ${c.overflow}` : null,

@@ -198,10 +198,14 @@ function refit() {
   camera.cx = get('worldW') / 2;
   camera.cy = get('worldH') / 2;
 }
+let renderScaleShown = 1;          // 真正生效的那一档(HUD 要报它, 不能报用户要的那一档)
 function resize() {
   const w = canvas.clientWidth, h = canvas.clientHeight;
   if (w === 0 || h === 0) return;
-  backend.resize(w, h);
+  const rs = effRenderScale();
+  renderScaleShown = rs;
+  // ⚠ 检视覆盖层【不跟着缩】: 它是文字与面包屑, 缩了会糊成一片, 而它的填充率只有主画布的零头。
+  backend.resize(w, h, rs);
   inspector.resize(w, h);
 }
 function worldToScreen(x, y) {
@@ -327,6 +331,7 @@ const panel = new Panel({
   // 与 H 键同语义: 不带参数进来就是「切下一档」(0→1→2→0)。若沿用 setLevel(undefined),
     // 面板按钮会把 HUD 打回「精简」而不是循环, 鼠标与键盘就不等价了。
     onHud() { showToast(`界面详略: ${hud.setLevel((hud.level + 1) % 3)}`); },
+    onQuality() { cycleRenderScale(); },
 });
 
 // ---------- 初始化世界(inspector 已声明,reset 才能挂 colony) ----------
@@ -335,6 +340,44 @@ refit();
 // ?inspect=N 直接检视第 N 只蚁(P2.4): 记忆航点链是个慢变量(要等这只蚁真的走完一趟并咬到食物
 // 才提交路线), 手点验收很痛苦; 让 URL 就能指到某一只蚁, 截图验收与分享都方便。非法/越界静默忽略。
 const QRY = new URLSearchParams(location.search);
+// ---------- 出画分辨率(P2.4d · 倍速性能) ----------
+// 为什么需要它: frame_check 量到渲染侧【JS】只有 0.47 ms/帧, 而浏览器里 64× 时一个 tick 的墙钟
+// ≈ 47 ms(仿真预算 40 ms + 出画与合成 ~7 ms) ⇒ 贵的那一份不在 JS 里, 在 GPU 填充率与合成里,
+// 无头量具看不见它。填充率 = 像素数, 所以「少画点像素」是唯一能量到它的开关。
+// 语义: 1 = 出厂(与今天逐字节相同)。CSS 尺寸不变 ⇒ 鼠标换算不受影响; 录像会跟着降(诚实的代价)。
+const RENDER_SCALE_Q = (() => {
+  const raw = QRY.get('renderScale');
+  const v = Number(raw);
+  return raw !== null && Number.isFinite(v) && v > 0 && v <= 1 ? v : 1;
+})();
+// 面板/快捷键「画质 Q」的手动档(P2.4d): 0 = 没按过, 交给 URL 与自动档。为什么要能当场切:
+// 出画分辨率是唯一砍得动 GPU 填充率的开关, 而它只藏在地址栏里等于没有 —— 倍速卡成 19 fps 时,
+// 用户应该两秒内试出「少画一半像素能不能救回来」。三档循环, 最后一档回到 100%(=出厂)。
+let renderScaleManual = 0;
+const QUALITY_STEPS = [1, 0.75, 0.55];
+function effRenderScale() {
+  if (renderScaleManual) return renderScaleManual;    // 当场按的比 URL 新
+  if (RENDER_SCALE_Q !== 1) return RENDER_SCALE_Q;      // URL 显式指定 ⇒ 一切照它(浏览器 A/B 用)
+  // 自动档: 只在高 DPI 机器上收 —— 那里 backing store 是 CSS 尺寸的 dpr² 倍(2 倍屏 = 4 倍像素),
+  // 倍速时把它压回 1 倍几乎看不出, 省下的填充率却是实打实的。dpr=1 的机器上这条是恒等式(实测本机 dpr=1)。
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  return loop.timeScale >= 16 ? 1 / dpr : 1;
+}
+// 切一档出画分辨率, 并写回地址栏的 ?renderScale=: PASSTHROUGH 是开局对 location.search 拍的快照,
+// 不改它的话「复制分享链接」会把这一档丢掉, 一次手调就变成不可复现的东西(能分享的才是证据)。
+function cycleRenderScale() {
+  const cur = effRenderScale();
+  const at = QUALITY_STEPS.findIndex((v) => Math.abs(v - cur) < 0.02);
+  renderScaleManual = QUALITY_STEPS[(at + 1) % QUALITY_STEPS.length];   // at=-1(自动档/怪值)回到 100%
+  const pct = Math.round(renderScaleManual * 100);
+  const px = Math.round(renderScaleManual * renderScaleManual * 100);
+  const entry = "renderScale=" + renderScaleManual;
+  const i = PASSTHROUGH.findIndex((s) => s.indexOf("renderScale=") === 0);
+  if (i >= 0) PASSTHROUGH[i] = entry; else PASSTHROUGH.push(entry);
+  pushUrl();
+  resize();
+  showToast(pct >= 100 ? '出画分辨率 100%(出厂画质, 逐像素)' : `出画分辨率 ${pct}%(像素量为出厂的 ${px}%, 再按 Q 回出厂)`);
+}
 // 注意必须先判参数存在: Number(null) 等于 0, 直接 Number() 会把「没带参数」当成「检视 0 号蚁」。
 const INSPECT0 = QRY.get('inspect') === null ? -1 : Number(QRY.get('inspect'));
 if (Number.isInteger(INSPECT0) && INSPECT0 >= 0 && INSPECT0 < colony.population) inspector.select(INSPECT0);
@@ -495,6 +538,14 @@ async function toggleRecord() {
 }
 
 window.addEventListener('keydown', (e) => {
+  // 过滤框(P2.4d)是原生 <input>: 在里面打一个 f 不该把工具切成「食物」。快捷键只认非输入控件。
+  const tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+  if (e.key === '/') {
+    e.preventDefault();
+    if (panel.focusFilter()) showToast('过滤参数: 打名字或说明里的词, Esc 退出');
+    return;
+  }
   const map = { '1': 0.125, '2': 1, '3': 4, '4': 64 };
   if (map[e.key]) { loop.setSpeed(map[e.key]); showToast(`速度 ${map[e.key]}x`); }
   if (e.key === '0') { loop.setSpeed(loop.timeScale ? 0 : 1); }
@@ -508,6 +559,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'm' || e.key === 'M') toggleGraph();
   if (e.key === 'v' || e.key === 'V') toggleRecord();
   if (e.key === 'h' || e.key === 'H') showToast(`界面详略: ${hud.setLevel((hud.level + 1) % 3)}`);
+  if (e.key === 'q' || e.key === 'Q') cycleRenderScale();
   if (e.key === 'x' || e.key === 'X') {
     const n = world.wallCount;
     world.clearWalls();
@@ -543,6 +595,14 @@ const loop = new Loop({
 // 录像时不许跳帧: 合成层靠【这一帧刚画完的 drawing buffer】取图, 被跳过的帧在视频里就是断流。
 // 非录像时才按 loop 的分档节流(倍速越高, 越该把毫秒买给仿真而不是买给画面)。
 loop.forceRender = () => recorder.active;
+// ?speed=<倍>(P2.4d): 让「倍速性能」的浏览器 A/B 可复现 —— 不带 = 出厂 1× 一个字都不变。
+// 它不是 SCHEMA 参数, 由 PASSTHROUGH 原样带回分享链接(与 ?stepBudgetMs / ?renderScale 同一套脾气)。
+const SPEED0 = (() => {
+  const raw = QRY.get('speed');
+  const v = Number(raw);
+  return raw !== null && Number.isFinite(v) && v > 0 ? v : 0;
+})();
+if (SPEED0 > 0) { loop.setSpeed(SPEED0); showToast(`速度 ${SPEED0}×(来自 ?speed=)`); }
 function renderFrame() {
   // 自适应曝光(P2.3.2): 每帧读一次蚁脚剂量,只读不写,不消耗随机流。
   // autoPeak=0 时 updateExposure 立刻返回、effPeak 退回滑杆 ⇒ 画面逐位不变。
@@ -587,6 +647,8 @@ function hudCtx() {
     backend: RENDER_BACKEND,
     speed: ts === 0 ? '暂停' : ts + '×',
     speedLevel: ts === 0 ? '暂停' : ts + '×',
+    // 出画分辨率 <1 时必须写在最亮那一层: 画面变糊是用户第一个会抱怨的东西, 而它是我自己开的
+    renderPct: renderScaleShown < 0.999 ? Math.round(renderScaleShown * 100) + '%' : '',
     // P2.5: 种群读数 = 活蚁数; 容量单独给一行"上限", 不然用户以为 5000 这个数字在骗人
     pop: colony.population,
     popCap: colony.capacity,
