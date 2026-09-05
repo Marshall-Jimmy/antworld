@@ -52,6 +52,8 @@ function runSim(dw, seed, scen) {
   const S = SCENARIOS[scen];
   for (const k in DEF) values[k] = DEF[k];
   values.dayNight = S.day; values.dayLength = 240; values.tempSwing = 0; values.diffuseWeight = dw;
+  // 回退钉(P2.3.3): dw=0.06 这一臂的语义是逐位复现 P2.4, 成熟度门必须钉在关(见 fog_check 同一处理)。
+  if (dw === 0.06) values.K_route = 0;
   const world = new World(values.worldW, values.worldH, values.gridCell);
   const field = new Field(values.worldW, values.worldH, values.gridCell);
   if (S.food) world.addFood(values.worldW * 0.62, values.worldH * 0.62, 30, S.food);

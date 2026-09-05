@@ -31,6 +31,9 @@ const SUB = (process.env.SUB || "").split(",").filter(Boolean);
 function runSim(dw, seed) {
   for (const k in DEF) values[k] = DEF[k];
   values.dayNight = 1; values.dayLength = 240; values.tempSwing = 0; values.diffuseWeight = dw;
+  // 回退钉(P2.3.3): dw=0.06 这一臂的语义是逐位复现 P2.4, 而成熟度门是 P2.4 之后引入的 sim 层自由度,
+  // 所以它必须钉在关; 0.02 那一臂才是当前出厂。
+  if (dw === 0.06) values.K_route = 0;
   const world = new World(values.worldW, values.worldH, values.gridCell);
   const field = new Field(values.worldW, values.worldH, values.gridCell);
   const fx = values.worldW * 0.62, fy = values.worldH * 0.62;

@@ -137,7 +137,10 @@ function check(name, ok, detail) { CHECK.push({ name: name, ok: !!ok, detail: de
 // 新基线(2026-09-05 实测, dw=0.02 出厂): 与旧值同布局同种子,只有 dw 这一个自由度不同。
 // 变化方向合理: 场摊得慢了 → 浓核更浓、外围更淡 → 蚂蚁读到的图样更锐,吞吐账本随之改写
 // (del 752→750, timeouts 100→69, aborts 1552→1482: 更少蚁在途中超时/弃货)。
-const EXPECT = { ants: '8288491.3883813173', field: '195.34836906715111', del: 750, timeouts: 69, aborts: 1482 };
+const EXPECT = { ants: '8285161.7223546822', field: '195.34836906715111', del: 750, timeouts: 69, aborts: 1474 };
+// P2.3.3: 出厂多了成熟度门 K_route=2。field 总量与 del/timeouts 一个都没变(750/69),
+// 变的只有蚂蚁自己的位置与空手返巢 1482→1474 ⇒ 门确实只改"往哪儿走", 不改"踩了多少进去"。
+const EXPECT_P232 = { ants: '8288491.3883813173', field: '195.34836906715111', del: 750, timeouts: 69, aborts: 1482 };
 const EXPECT_P24 = { ants: '8297548.1091679782', field: '285.06957330616132', del: 752, timeouts: 100, aborts: 1552 };
 function identityRun(over) {
   useParams(over);
@@ -166,9 +169,14 @@ function identityTest() {
   console.log('(c) 灵敏度对照(昼夜) : ants ' + c.ants + ' | field ' + c.field);
   check('恒等(c) 灵敏度对照: 真机制必须改变校验和', c.ants !== EXPECT.ants, '内源钟一开就该破恒等(否则说明①②是假绿)');
   // (d) 门控对照: 把改掉的 sim 参数显式钉回 P2.4 的值, 必须逐位复现旧基线。
-  const d = identityRun({ dayNight: 0, weather: 0, diffuseWeight: 0.06 });
+  // P2.3.3 起这一臂要同时钉 K_route=0: (d) 的语义是逐位复现 P2.4, 而成熟度门是 P2.4 之后引入的
+  // sim 层自由度。不钉的话这一臂会变成厚场+门控的混合体, 不再是任何已发布版本的对照。
+  const d = identityRun({ dayNight: 0, weather: 0, diffuseWeight: 0.06, K_route: 0 });
   console.log('(d) 旧 dw=0.06 门控 : ants ' + d.ants + ' | field ' + d.field + ' | del ' + d.del + ' timeouts ' + d.timeouts + ' aborts ' + d.aborts);
   check('恒等(d) 门控: dw 钉回 0.06 必须逐位复现 P2.4 基线', d.ants === EXPECT_P24.ants && d.field === EXPECT_P24.field && d.del === EXPECT_P24.del && d.timeouts === EXPECT_P24.timeouts && d.aborts === EXPECT_P24.aborts, '对 P2.4 基线 ' + EXPECT_P24.ants);
+  const e = identityRun({ dayNight: 0, weather: 0, K_route: 0 });
+  console.log('(e) 旧 K_route=0 门控: ants ' + e.ants + ' | field ' + e.field + ' | del ' + e.del + ' timeouts ' + e.timeouts + ' aborts ' + e.aborts);
+  check('恒等(e) 门控: 成熟度门钉回 0 必须逐位复现 P2.3.2 出厂基线', e.ants === EXPECT_P232.ants && e.field === EXPECT_P232.field && e.del === EXPECT_P232.del && e.timeouts === EXPECT_P232.timeouts && e.aborts === EXPECT_P232.aborts, '对 P2.3.2 基线 ' + EXPECT_P232.ants);
 }
 
 // ================== ② 风暴时序 A→B→C→D ==================

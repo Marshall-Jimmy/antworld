@@ -18,13 +18,13 @@ export class Panel {
 
     const groupOrder = ['世界', '感知', '转向', '运动 / 记忆', '真实感', '天气 / 昼夜', '场'];
     const groupOf = (key) => {
-      if (['foodLoadRate','carryTimeout','forageTimeout','nestRadius','speed','leak','K_mem','memStep','memForget'].includes(key)) return '运动 / 记忆';
+      if (['foodLoadRate','carryTimeout','forageTimeout','nestRadius','speed','leak','K_mem','K_route','memStep','memForget'].includes(key)) return '运动 / 记忆';
       if (['sensorAngle','sensorDist','sensorMode','K_steer','saturationMode','K_sat','alarmSens'].includes(key)) return '感知';
       if (['K_chem','K_home','K_out','K_wall','K_alarm','sigma','tumbleAmp','alpha'].includes(key)) return '转向';
       if (['speedVar','turnVar','depositVar','pauseRate','pauseTime','nestDwell','missRecover'].includes(key)) return '真实感';
       if (['dayNight','dayLength','dayPhase','dayCurve','tempBase','tempSwing','tempMin','tempMax',
            'weather','stormEvery','stormLen','preStormRush','rainUrge','rainWash','windWash','rainCooling','rainShelter'].includes(key)) return '天气 / 昼夜';
-      if (['diffuseWeight','decayRate','peak','toneMap','autoPeak','alarmDecay','alarmSplash','alarmPeak','emptyDeposit'].includes(key)) return '场';
+      if (['diffuseWeight','decayRate','peak','toneMap','autoPeak','lateralK','alarmDecay','alarmSplash','alarmPeak','emptyDeposit'].includes(key)) return '场';
       return '世界';
     };
 

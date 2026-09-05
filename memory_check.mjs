@@ -139,7 +139,7 @@ console.log(`=== P2.4 个体路线记忆验收 (seed=${SEED}, 保真带=${BAND}�
 
 // ---------------- ① 恒等回归 ----------------
 if (SUB.includes('identity')) {
-  console.log('\n--- ① 恒等回归(两组门控基线: dw 钉回 0.06 复现 P2.3.1 旧码 / 出厂 dw=0.02 复现本轮重录) ---');
+  console.log('\n--- ① 恒等回归(三组门控基线: dw=0.06 复现 P2.3.1 旧码 / 出厂关 dw=0.02 复现 P2.3.2 / K_route=0 复现 P2.3.2 出厂开) ---');
   // 本布局(单源管饱/seed=memcheck/3600 步)自己的关-门控常量基线。注意: 它**不是** perf_check 的
   // 285.069…——布局与种子都不同。对 P2.3.1 的逐位恒等由 perf_check 单独证明(见 METRICS)。
   // 旧的那两个数不是"跑一遍录下来"的自证——是用 `git worktree add _ant_p231 P2.3.1` 把 P2.3.1 的
@@ -154,6 +154,8 @@ if (SUB.includes('identity')) {
   // REBASE=1 只打印当前出厂配置的全精度校验和供录入, 不参与判定、不改动任何阈值。
   const BASE_A = 8271063.288091577, BASE_F = 1791.47545048508;   // dw=0.06 门控值(P2.3.1 旧码实测)
   const NEW_A = 8363664.351490582, NEW_F = 1031.4224609786145;                                    // 出厂 dw=0.02 重录值(由 REBASE=1 打印后填入)
+  // P2.3.2 出厂开(dw=0.02, K_mem=2, 当时还没有成熟度门)的全精度值, 由 REBASE=1 打印后录入。
+  const P232_A = 8311038.489231705, P232_F = 1444.9635547870257;
   const run3600 = (over) => {
     const S = makeSim(over, "memcheck");
     for (let st = 0; st < 3600; st++) stepOnce(S);
@@ -161,13 +163,17 @@ if (SUB.includes('identity')) {
   };
   const old06 = run3600({ K_mem: 0, diffuseWeight: 0.06 });
   const off1 = run3600({ K_mem: 0 }), off2 = run3600({ K_mem: 0 }), on = run3600({ K_mem: 2 });
-  if (process.env.REBASE) console.log('  REBASE 全精度: ants ' + String(off1.a) + ' field ' + String(off1.f));
+  if (process.env.REBASE) console.log('  REBASE 全精度关: ants ' + String(off1.a) + ' field ' + String(off1.f));
+  if (process.env.REBASE) console.log('  REBASE 全精度开: ants ' + String(on.a) + ' field ' + String(on.f));
   console.log('  dw钉0.06(旧码基线): ants ' + old06.a.toFixed(6) + ' field ' + old06.f.toFixed(6));
   console.log('  出厂关(两次): ants ' + off1.a.toFixed(6) + ' / ' + off2.a.toFixed(6) + '  field ' + off1.f.toFixed(6) + ' / ' + off2.f.toFixed(6));
   console.log('  出厂开:       ants ' + on.a.toFixed(6) + '  field ' + on.f.toFixed(6));
   check('①a 同种子跑两次逐位相同(整条链路确定性)', Math.abs(off1.a - off2.a) < 1e-9 && Math.abs(off1.f - off2.f) < 1e-12, off1.a.toFixed(6));
   check('①b0 门控: dw 显式钉回 0.06 必须逐位复现 P2.3.1 旧码基线 ⇒ 本轮只动了 dw 一个自由度', Math.abs(old06.a - BASE_A) < 1e-6 && Math.abs(old06.f - BASE_F) < 1e-9, 'ants ' + old06.a.toFixed(9) + ' vs ' + BASE_A.toFixed(9) + ' | field ' + old06.f.toFixed(8) + ' vs ' + BASE_F.toFixed(8));
   check('①b1 出厂 dw=0.02 逐位复现本轮重录基线', Math.abs(off1.a - NEW_A) < 1e-6 && Math.abs(off1.f - NEW_F) < 1e-9, 'ants ' + off1.a.toFixed(6) + ' field ' + off1.f.toFixed(6));
+  // ①b2: 门控出厂开之后, "复现 P2.3.2"这句话必须有一个显式的钉子撑着 —— 把新自由度钉回关。
+  const on0 = run3600({ K_mem: 2, K_route: 0 });
+  check('①b2 门控: K_route 钉回 0 必须逐位复现 P2.3.2 出厂开基线 ⇒ 成熟度门是新增自由度, 没把旧行为改坏', Math.abs(on0.a - P232_A) < 1e-9 && Math.abs(on0.f - P232_F) < 1e-9, 'ants ' + on0.a.toFixed(9) + ' vs ' + P232_A.toFixed(9) + ' | field ' + on0.f.toFixed(10) + ' vs ' + P232_F.toFixed(10));
   check('①c K_mem=2 必须破恒等(门控真的接上了)', Math.abs(on.a - off1.a) > 1e-6, '差 ' + (on.a - off1.a).toFixed(3));
 }
 // ---------------- ② 稳定单源: 保真↑ 且吞吐零成本 ----------------
@@ -367,34 +373,63 @@ if (SUB.includes('abandon')) {
 // 恒为 0(= 集体通道被整个摘走, 定向信息只剩每只蚁自己那条 A)。只有窗口B 才是"记忆 vs 无记忆"
 // 的干净对照, 判据压在 B 上;A 如实报数不判绿——它量到的是"群体重新踩网的快慢", 本来就不该记在记忆头上。
 if (SUB.includes('weak')) {
-  console.log('\n--- ⑤ 400 蚁小群: 建成 240s → 窗口A 抹一次 60s → 窗口B 每步压平 45s ---');
+  // P2.3.3 量具升级(改的是尺子不是机制): ⑤ 原来只有 weak 一个种子, 而 §7 早就写明"⑤ 的建成期读数
+  // 是单种子观察, 够不上结论"。现在三种子各跑一遍, 判据一律取最坏种子(与 ③a/③b 同一写法),
+  // 每个种子的原始行照常打印。顺序要紧: 先在上游门控关闭(K_route=0)下用这把新尺子把债量实,
+  // 再用同一把尺子选门槛值 —— 尺子和结论不能同时改, 否则又一次说不清归因。
+  console.log('\n--- ⑤ 400 蚁小群 × 3 种子: 建成 240s → 窗口A 抹一次 60s → 窗口B 每步压平 45s ---');
+  const SEEDS_W = ['weak', 'weakB', 'weakC'];
   const out = {};
   const winFid = (R, h0, t0) => (R.tot > t0 ? 100 * (R.hit - h0) / (R.tot - t0) : 0);
-  for (const k of [0, 1, 2, 3]) {
-    const S = makeSim({ K_mem: k, antCount: 400 }, 'weak');
-    const R = makeRuler();
-    let st = 0, d0 = 0, h0 = 0, t0 = 0;
-    for (; st < 240 / DT; st++) { stepOnce(S); if (st * DT >= 150) rulerStep(S, R, st); }
-    const pre = { del: S.colony.deliveries, fid: fidelity(R), cov: routeCoverage(S), len: meanRouteLen(S), peak: fieldPeak(S) };
-    S.field.clear();
-    d0 = S.colony.deliveries; h0 = R.hit; t0 = R.tot;
-    for (; st < 300 / DT; st++) { stepOnce(S); rulerStep(S, R, st); }
-    const wash = { del: S.colony.deliveries - d0, fid: winFid(R, h0, t0), peak: fieldPeak(S) };
-    d0 = S.colony.deliveries; h0 = R.hit; t0 = R.tot;
-    const abort0 = S.colony.aborts;
-    for (; st < 345 / DT; st++) { stepOnce(S); S.field.clear(); rulerStep(S, R, st); }
-    out[k] = { pre, wash, flat: { del: S.colony.deliveries - d0, fid: winFid(R, h0, t0), abort: S.colony.aborts - abort0 } };
-    console.log('  K_mem=' + k + ': 建成 del=' + pre.del + ' 保真=' + pre.fid.toFixed(1) + '% 路线长=' + pre.len.toFixed(0) +
-      '% 有路线蚁=' + pre.cov.toFixed(0) + '% 场峰=' + pre.peak.toFixed(2) +
-      ' | A抹一次60s del=' + wash.del + ' 保真=' + wash.fid.toFixed(1) + '% 场峰回=' + wash.peak.toFixed(1) +
-      ' | B压平45s del=' + out[k].flat.del + '(' + (out[k].flat.del / 45).toFixed(2) + '/s) 保真=' + out[k].flat.fid.toFixed(1) +
-      '% 弃航=' + out[k].flat.abort);
+  for (const sd of SEEDS_W) {
+    out[sd] = {};
+    for (const k of [0, 1, 2, 3]) {
+      const S = makeSim({ K_mem: k, antCount: 400 }, sd);
+      const R = makeRuler();
+      let st = 0, d0 = 0, h0 = 0, t0 = 0;
+      for (; st < 240 / DT; st++) { stepOnce(S); if (st * DT >= 150) rulerStep(S, R, st); }
+      const pre = { del: S.colony.deliveries, fid: fidelity(R), cov: routeCoverage(S), len: meanRouteLen(S), peak: fieldPeak(S) };
+      S.field.clear();
+      d0 = S.colony.deliveries; h0 = R.hit; t0 = R.tot;
+      for (; st < 300 / DT; st++) { stepOnce(S); rulerStep(S, R, st); }
+      const wash = { del: S.colony.deliveries - d0, fid: winFid(R, h0, t0), peak: fieldPeak(S) };
+      d0 = S.colony.deliveries; h0 = R.hit; t0 = R.tot;
+      const abort0 = S.colony.aborts;
+      for (; st < 345 / DT; st++) { stepOnce(S); S.field.clear(); rulerStep(S, R, st); }
+      out[sd][k] = { pre, wash, flat: { del: S.colony.deliveries - d0, fid: winFid(R, h0, t0), abort: S.colony.aborts - abort0 } };
+      console.log('  [' + sd + '] K_mem=' + k + ': 建成 del=' + pre.del + ' 保真=' + pre.fid.toFixed(1) + '% 路线长=' +
+        pre.len.toFixed(0) + ' 有路线蚁=' + pre.cov.toFixed(0) + '% 场峰=' + pre.peak.toFixed(2) +
+        ' | A抹一次60s del=' + wash.del + ' 保真=' + wash.fid.toFixed(1) + '% 场峰回=' + wash.peak.toFixed(1) +
+        ' | B压平45s del=' + out[sd][k].flat.del + '(' + (out[sd][k].flat.del / 45).toFixed(2) + '/s) 保真=' +
+        out[sd][k].flat.fid.toFixed(1) + '% 弃航=' + out[sd][k].flat.abort);
+    }
   }
-  check('⑤a 压平期记忆组吞吐 ≥ 基线 1.5 倍(集体通道归零时记忆接管)', out[2].flat.del >= out[0].flat.del * 1.5, '开 ' + out[2].flat.del + ' vs 关 ' + out[0].flat.del + ' (' + (out[2].flat.del / Math.max(1, out[0].flat.del)).toFixed(2) + '×)');
-  check('⑤b 压平期记忆组沿线保真 ≥ 基线 1.2 倍(靠记得的路, 不是靠重新踩网)', out[2].flat.fid >= out[0].flat.fid * 1.2, out[2].flat.fid.toFixed(1) + '% vs ' + out[0].flat.fid.toFixed(1) + '%');
-  check('⑤c 权重越大越敢用记忆: 压平期吞吐 1≤2≤3 不下降', out[1].flat.del <= out[2].flat.del + 1e-9 && out[2].flat.del <= out[3].flat.del + 1e-9, out[1].flat.del + ' ≤ ' + out[2].flat.del + ' ≤ ' + out[3].flat.del);
-  check('⑤d 建成期记忆不帮倒忙(集体通道还在: 吞吐 ≥ 基线 95%)', out[2].pre.del >= out[0].pre.del * 0.95, out[2].pre.del + ' vs ' + out[0].pre.del + ' (' + (100 * out[2].pre.del / Math.max(1, out[0].pre.del)).toFixed(1) + '%)');
-  check('⑤e 压平期记忆组方向感更强: 弃航次数 ≤ 基线(不必重新试探)', out[2].flat.abort <= out[0].flat.abort, out[2].flat.abort + ' vs ' + out[0].flat.abort);
+  // 逐种子算出四条比值, 再按最坏种子下判 —— 与 ③a/③b 的取最坏同一写法。
+  const M = SEEDS_W.map((sd) => ({
+    sd,
+    d: out[sd][2].pre.del / Math.max(1, out[sd][0].pre.del),
+    a: out[sd][2].flat.del / Math.max(1, out[sd][0].flat.del),
+    b: out[sd][2].flat.fid / Math.max(1, out[sd][0].flat.fid),
+    e: out[sd][0].flat.abort / Math.max(1, out[sd][2].flat.abort),
+    cOk: out[sd][1].flat.del <= out[sd][2].flat.del + 1e-9 && out[sd][2].flat.del <= out[sd][3].flat.del + 1e-9,
+    eOk: out[sd][2].flat.abort <= out[sd][0].flat.abort
+  }));
+  const worst = (key) => M.reduce((x, y) => (y[key] < x[key] ? y : x));
+  const wD = worst('d'), wA = worst('a'), wB = worst('b'), wE = worst('e');
+  console.log('  逐种子 ⑤d建成 ' + M.map((m) => m.sd + ' ' + (100 * m.d).toFixed(1) + '%').join(' | ') +
+    ' | 判据取最坏 ' + (100 * wD.d).toFixed(1) + '% (' + wD.sd + ')');
+  console.log('  逐种子 ⑤a压平 ' + M.map((m) => m.a.toFixed(2) + '×').join(' | ') +
+    ' | 判据取最坏 ' + wA.a.toFixed(2) + '× (' + wA.sd + ')');
+  check('⑤a 压平期记忆组吞吐 ≥ 基线 1.5 倍(集体通道归零时记忆接管, 三种子取最坏)', wA.a >= 1.5,
+    '最坏 ' + wA.sd + ': 开 ' + out[wA.sd][2].flat.del + ' vs 关 ' + out[wA.sd][0].flat.del + ' (' + wA.a.toFixed(2) + '×)');
+  check('⑤b 压平期记忆组沿线保真 ≥ 基线 1.2 倍(靠记得的路, 不是靠重新踩网, 三种子取最坏)', wB.b >= 1.2,
+    '最坏 ' + wB.sd + ': ' + out[wB.sd][2].flat.fid.toFixed(1) + '% vs ' + out[wB.sd][0].flat.fid.toFixed(1) + '%');
+  check('⑤c 权重越大越敢用记忆: 压平期吞吐 1≤2≤3 不下降(三种子全部)', M.every((m) => m.cOk),
+    M.map((m) => m.sd + ' ' + out[m.sd][1].flat.del + '≤' + out[m.sd][2].flat.del + '≤' + out[m.sd][3].flat.del).join(' | '));
+  check('⑤d 建成期记忆不帮倒忙(集体通道还在: 吞吐 ≥ 基线 95%, 三种子取最坏)', wD.d >= 0.95,
+    '最坏 ' + wD.sd + ': ' + out[wD.sd][2].pre.del + ' vs ' + out[wD.sd][0].pre.del + ' (' + (100 * wD.d).toFixed(1) + '%)');
+  check('⑤e 压平期记忆组方向感更强: 弃航次数 ≤ 基线(不必重新试探, 三种子全部)', M.every((m) => m.eOk),
+    '最不利 ' + wE.sd + ': 开 ' + out[wE.sd][2].flat.abort + ' vs 关 ' + out[wE.sd][0].flat.abort);
 }
 
 console.log(`\n=== ${pass + fail} 项断言, ${pass} PASS / ${fail} FAIL ===  耗时 ${((Date.now() - T0) / 1000).toFixed(0)}s`);
