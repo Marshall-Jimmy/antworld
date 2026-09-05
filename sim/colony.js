@@ -46,6 +46,7 @@ export class Colony {
     this.memLX = new Float32Array(count); // B 上一个记点的位置(判断"走开一个 memStep 了没")
     this.memLY = new Float32Array(count);
     this.memFail = new Float32Array(count); // 这条 A 连续扑空几次(→ 权重线性衰减到废弃)
+    this.memTrips = new Uint8Array(count); // 这根线连续被走通验证几次(P2.3.3 成熟度门, K_route=0 时不读不写)
     // 路线长度(世界单位): 提交时只认"不比现有路线长"的新路线(P2.4)——真实蚁逐趟把路走短,
     // 而第一趟找到食物靠的往往是乱走, 不筛就会把弯路焊死成永久路线(实测吞吐反而 −5~9%)。
     this.memLA = new Float32Array(count);
@@ -98,7 +99,7 @@ export class Colony {
     const {
       sensorAngle, sensorDist, speed,
       foodLoadRate, carryTimeout, nestRadius, nestDwell, forageTimeout, missRecover,
-      K_mem = 0, memStep = 24, memForget = 2,
+      K_mem = 0, memStep = 24, memForget = 2, K_route = 0,
     } = params;
 
     let firstFoodAt = -1; // 本步首次吃到食物的蚂蚁索引
@@ -240,7 +241,10 @@ export class Colony {
           const or0 = 1 - md / reachR;
           const onRoute = or0 > 0 ? or0 : 0;
           const forget = this.memFail[i] >= memForget ? 0 : 1 - this.memFail[i] / memForget;
-          const rel = K_mem * forget * onRoute;
+          // 成熟度门(P2.3.3): 真实蚁"走熟路"的权威是逐趟验证出来的, 不是"离自己画的一条线多近"。
+          // K_route=0 ⇒ mature 恒等于 1, 而 IEEE754 里 x*1 是精确的 ⇒ 出厂行为逐位不变(新机制的门控)。
+          const mature = K_route <= 0 ? 1 : this.memTrips[i] >= K_route ? 1 : this.memTrips[i] / K_route;
+          const rel = K_mem * forget * onRoute * mature;
           st.memShare = rel > 1 ? 1 : rel;                      // 这条记忆在总转向里占多大份额
           st.memTurn = K_mem * Math.sin(Math.atan2(mdy, mdx) - theta);   // 它自己想拐的量
         }
@@ -342,7 +346,7 @@ export class Colony {
         this.load[i] = 0; this.carryT[i] = 0;
         this.forageT[i] = 0; this.misses[i] = 0;
         this.wallSide[i] = 0;   // 重生即新蚁: 沿墙偏好重新定侧
-        this.memNA[i] = 0; this.memNB[i] = 0; this.memIA[i] = 0; this.memFail[i] = 0;
+        this.memNA[i] = 0; this.memNB[i] = 0; this.memIA[i] = 0; this.memFail[i] = 0; this.memTrips[i] = 0;
         this.memLA[i] = 0; this.memLB[i] = 0;   // 新蚁没有路线(P2.4)
         this.tumble[i] = 1 + u() * 20;
         this.pauseT[i] = 1 + u();
@@ -372,6 +376,11 @@ export class Colony {
           // (一步都没走就撞上食物, 那条"路线"没有信息量, 留着旧的 A 更准)。
           if (memOn) {
             const nb = this.memNB[i];
+            // 走通验证(P2.3.3): 这一趟是不是**沿着 A 走到大半**才吃到食物的? 是 ⇒ 同一个结论被独立
+            // 验证第二次, 成熟度 +1。阈值 0.6 与下面"扑空该不该算在路线头上"用的是同一个比例判据,
+            // 不引入新的绝对尺度(薄场只改变闻不到路的时长, 不该顺手改变记忆的权威)。
+            const followed = this.memNA[i] > 0 && this.memIA[i] >= this.memNA[i] * 0.6;
+            if (followed && this.memTrips[i] < 255) this.memTrips[i]++;
             // 只接受"不比现有路线长"的新路线(留 5% 容差, 免得被一次绕行的噪声卡住不更新)。
             // 有了这条, 记忆通道才会逐趟收敛到走廊; 没有它, 第一趟的弯路被永久焊死。
             if (nb >= 2 && (this.memNA[i] === 0 || this.memLB[i] <= this.memLA[i] * 1.05)) {
@@ -401,6 +410,9 @@ export class Colony {
               this.memLA[i] = la2;
               this.memIA[i] = 0;
               this.memFail[i] = 0;
+              // 换上新线就重新验证: 没跟自己的线(followed=false) ⇒ 这条线一次都没被证实过, 从 1 开始;
+              // 跟到大半才换的 ⇒ 新线就是刚走过的那条走廊的改进版, 成熟度延续上面 +1 的结果。
+              if (!followed) this.memTrips[i] = 1;
             }
             this.memNB[i] = 0;   // 负重段不记路线, 下一趟出门从头记
             this.memLB[i] = 0;
@@ -494,7 +506,7 @@ export class Colony {
             // 于是第三天清晨记忆组吞吐归 0(实测)——恰好把这条机制想解决的问题自己又制造了一遍。
             if (this.memIA[i] >= this.memNA[i] * 0.6) {
               const f = this.memFail[i] + 1;
-              if (f >= memForget) { this.memNA[i] = 0; this.memIA[i] = 0; this.memFail[i] = 0; }
+              if (f >= memForget) { this.memNA[i] = 0; this.memIA[i] = 0; this.memFail[i] = 0; this.memTrips[i] = 0; }
               else this.memFail[i] = f;
             }
             // 指针归零: 这条线下一趟得从**巢这一头**重走。漏掉这一行是验收 ③b 首跑 FAIL 的真凶——
