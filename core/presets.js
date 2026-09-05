@@ -16,11 +16,113 @@ import { SCHEMA, get, set } from './config.js';
 // 真实蚁挤不过两格宽的斜缝, 细刷出来的墙会在对角缝处漏蚁, 把「绕行」变成「穿墙」的假象。
 export const PRESET_BRUSH = 22;
 
+// ---- 出厂默认场景: 野外散粮(P2.4e) ----
+// 为什么不再是「一块 200 单位的源」: 那块源在出厂 5000 蚁下**平均几十秒就见底**(对照臂实测
+// 10 秒搬空, 见 METRICS P2.4e §2)。后果不是崩溃, 是**验收项在实时画面里等于不存在**: P2.3.5 的
+// 「种子被啃出缺口」需要剂量撑得过观察窗口; 高倍速下 HUD 常年读「负重 0」是同一件事的另一个症状。
+//
+// 剂量为什么按蚁数标定, 以及为什么常数是 15——
+// 取食速率**不是常数**, 往两个方向都会错:
+//  ① 爬升: 网络没成熟时是「搜索受限」, 速率远低于饱和值(第一版拿它标定 ⇒ 算出 890 秒而实测 95 秒);
+//  ② 振荡与种子方差: 网络成熟了也稳不住——**出厂 5000 蚁自己会在「全力搬运」与「几乎全停」之间来回摆**
+//     (food_drain_probe 第四支: 吞吐 0.09↔137 单位/秒、负重 4↔3210, 周期约 180 秒), 而且换一颗种子
+//     平均吞吐能差 2.6 倍(实测 28 与 72 单位/秒两颗)。一粒种子见底之后整群还要瞎摸 100 多秒才
+//     重新找到下一粒, 那段时间场上看着就像没蚁在干活。
+//     ⚠ 这条振荡不是本次改出来的(旧的单源那一支同样有), 但它决定了**标定只能按最忙那一支取保守值**。
+// 所以用三个种子里最忙那支的实测平均吞吐 72 单位/秒 ÷ 5000 蚁 = 0.0144 单位/秒/蚁:
+//   每蚁 15 单位 ⇒ 整群口粮 ≥ 1040 秒(不忙的种子会撑到 2000 秒以上)。四版标定的返工都记在 §2。
+export const FOOD_UNITS_PER_ANT = 15;
+// 保守平均吞吐(单位/秒/蚁): 只用来把 FOOD_OBS_MIN 变成一句可核对的算术(15 ÷ 0.0144 = 1042s)。
+export const FOOD_RATE_AVG_PER_ANT = 0.0144;
+export const FOOD_OBS_MIN = 600;      // 判据下限: 出厂散粮至少得撑过 10 分钟仿真
+
+// **两块, 不是一块也不是三块**——这个数量是实测定下来的, 不是审美:
+//  · 一块: 缺口要长到看得清得等它被啃掉两三成; 而一吃完整张图就空了, 没有生命周期可看。
+//  · 三块(本文件的第一版): **赢家通吃**。225,000 单位那一次跑到 810 秒, 近籽已被啃掉 84%,
+//    主源与远副源都还停在 100%——一块没人碰的种子摆在场面里, 它那个永远不变的圆比空地更刺眼。
+//  · 两块: 近籽先被找到、先被吃完(「整粒 → 缺口 → 吃完了」在两分钟内跑完一遍, P1l 钉这个窗口),
+//    然后全群搬到主源, 主源再用十几分钟长缺口(P1i 钉那条时间窗)。两段是**先后发生**的, 所以
+//    出厂最招牌的那条单一主走廊仍然只有一条, 不会撕成三条细线。
+// 份额所以是「剧本分配」而不是面积分配: 面积决定**吞吐速率**, 剂量决定**能吃多久**, 是两回事。
+// 两块都沿「巢 → 主源」这条射线摆, 随机流**仍然只消耗两次 r()**——与改动前逐字相同,
+// 蚂蚁那侧的随机流一个字节都没有被挪动。
+export const DEFAULT_FOOD_SPOTS = [
+  { kind: 'near', r: 22, share: 0.09 },   // 主源的一半距离, 6,750 单位: 实测 58 u/s ⇒ 约 116 秒见底
+  { kind: 'main', r: 32, share: 0.91 },   // 60,750 单位: 300 秒时还剩 76~93%(两颗种子实测区间)
+];
+
+// 行程预算(世界单位): 一块源离巢多远才算「蚁够得着」的**必要条件**。
+// 为什么必须有这条: 第一版把远副源摆在 1.62× 主源距离 = 733u, 那一次它 540 秒一口没被吃掉。
+// 不只是蚁在偏心: carryTimeout=40 秒下 733u 往返要 32 秒, 加上装货 2 秒与巢内磨蹭就超了,
+// 于是正在赶路的蚁被当成「死循环」在半路丢了货(那一次 负重 从 2544 掉到 59)。
+// 同一件事迷宫与饥荒预设都踩过, 当时的解法是放宽参数迁就场景; 这里选另一条——让场景迁就参数,
+// 因为默认视图不该要求用户先弄懂一串超时滑杆, 才知道远处那颗种子为什么没人吃。
+// ⚠ 反过来不成立: 预算之内也**未必**吃得到(上一条的赢家通吃就是反例, 那块远籽在预算之内)。
+//   所以它被 P1j 钉成「不许摆预算外的种子」, 不是「摆了就一定会被吃」的承诺。
+export const TRIP_BUDGET_KEEP = 0.75;   // 只用泄压阀的 75%, 剩下 25% 留给绕路与停顿
+export function tripBudget() {
+  const secs = get('carryTimeout') * TRIP_BUDGET_KEEP - get('nestDwell') - 1 / get('foodLoadRate');
+  return Math.max(40, (secs * get('speed')) / 2);
+}
+// 某块源走一趟的秒数(判定它够不够得着用; 门禁 P1j 与 buildDefaultFoods 共用这一条式子)
+export function tripSeconds(dist) {
+  return (2 * dist) / get('speed') + 1 / get('foodLoadRate') + get('nestDwell');
+}
+
+// 用户手点一粒种子该给多少: 与出厂**近籽**同一剂量(总剂量的 6%), 因为它要的正是同一件事——
+// 几分钟内被啃完并消失。出厂吞吐 150~380 单位/秒之下, 旧的那个 120 单位不到一秒就没了,
+// 点了等于没点: 剂量量纲要跟场景一致, 不能各写各的。
+export function handFoodDose() {
+  return Math.max(60, Math.round(get('antCount') * FOOD_UNITS_PER_ANT * DEFAULT_FOOD_SPOTS[0].share));
+}
+
+// 往 world 里放出厂散粮; 返回剂量读数, 给 toast 与门禁用(不靠肉眼确认场景生效了)。
+// 与预设 layout 不同: 这里不清空世界, 因为它本身就是被 clear() 之后那个默认布局。
+export function buildDefaultFoods(world, r, totalOverride) {
+  const total = totalOverride > 0 ? totalOverride : Math.round(get('antCount') * FOOD_UNITS_PER_ANT);
+  // 巢半径只在 config 里(World 不设这个字段, 它只记 nestX/nestY)。写成 world.nestRadius 会得到
+  // undefined, 于是下面那句「不许压巢盘」的保险变成跟 NaN 比大小——**永远不成立也永远不报**。
+  // 这一条是 P1h 第一跑逼出来的: 判据抓的是我自己刚写的哑哨兵, 不是既有代码。
+  const nestR = get('nestRadius');
+  const mx = world.w * (0.55 + r() * 0.2);      // 主源: 出厂原样(巢的右下象限内随机)
+  const my = world.h * (0.55 + r() * 0.2);
+  const vx = mx - world.nestX, vy = my - world.nestY;
+  const mid = Math.hypot(vx, vy) || 1;
+  const ux = vx / mid, uy = vy / mid;
+  const budget = tripBudget();
+  let dose = 0;
+  for (const s of DEFAULT_FOOD_SPOTS) {
+    // 近籽在主源的一半距离上(出厂参数下主源 100~596u ⇒ 近籽 50~298u, 恒在预算 616u 之内;
+    // 那个 min() 管的是用户把世界拉大或把 speed 调低的情况——预算外的种子必然吃不到, 见 tripBudget)
+    const dist = s.kind === 'near' ? Math.min(mid * 0.5, budget) : mid;
+    let x = world.nestX + ux * dist, y = world.nestY + uy * dist;
+    // 界内夹取: 环面上「种子从对侧露出来」看着像 bug 而不是特性, 宁可靠巢也不出界
+    x = Math.min(world.w - s.r - 2, Math.max(s.r + 2, x));
+    y = Math.min(world.h - s.r - 2, Math.max(s.r + 2, y));
+    // 不压巢盘: 一粒种子糊在巢门口, 「觅食」就没有距离可言了
+    const d = Math.hypot(x - world.nestX, y - world.nestY);
+    const minD = nestR + s.r + 8;
+    if (d < minD) {
+      const k = d > 1e-6 ? minD / d : minD / 1;
+      x = world.nestX + (x - world.nestX) * k;
+      y = world.nestY + (y - world.nestY) * k;
+      // 推出巢盘之后再夹一次界(极端参数下两个约束会打架: 世界很小而 nestRadius 很大,
+      // 那时「界内」优先——出厂参数下永远走不到这里, P1h 钉的就是出厂这一支)。
+      x = Math.min(world.w - s.r - 2, Math.max(s.r + 2, x));
+      y = Math.min(world.h - s.r - 2, Math.max(s.r + 2, y));
+    }
+    const amount = Math.max(8, Math.round(total * s.share));
+    world.addFood(x, y, s.r, amount);
+    dose += amount;
+  }
+  return { total, dose };
+}
+
 export const PRESETS = [
   {
     id: 'default',
     name: '默认走廊',
-    desc: '一块随种子落位的食源: 看蚁群自己从零铺出一条主走廊',
+    desc: '一近一主两块随种子落位的种子: 看蚁群自己从零铺出一条主走廊',
     params: {},
     layout: null,           // null = 保持 reset() 的默认布局(一个字节都不改)
   },

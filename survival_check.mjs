@@ -65,8 +65,10 @@ function makeSim(seedStr, over, antsOverride) {
   const r = rng(hashSeed(seedStr));
   const n = antsOverride ?? get('antCount');
   const colony = new Colony(n, { rng: r, world, nestRadius: get('nestRadius') });
-  // 与 app.js/preset_check 同一块默认食源: 位置要消耗两次 r()(顺序敏感, 随机流从这里往后才对齐),
-  // 剂量由调用方改。之前忘了加, T5 直接 TypeError: Cannot set properties of undefined。
+  // **刻意不复用** core/presets.js 的 buildDefaultFoods(): T1 要比对的四钉是在「单块 200 单位」这个
+  // 剂量下标定的, 换场景必红(P2.4e 把出厂默认改成了一主两副, 本量具一字未动, 所以仍然 32/3)。
+  // 位置仍消耗两次 r()(顺序敏感, 随机流从这里往后才对齐), 剂量由调用方改。
+  // 之前忘了加, T5 直接 TypeError: Cannot set properties of undefined。
   world.addFood(w * (0.55 + r() * 0.2), h * (0.55 + r() * 0.2), 30, 200);
   return { world, field, alarm, colony, r };
 }

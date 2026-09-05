@@ -14,12 +14,23 @@
 //     ⚠ 第一跑判据写的是死值 60 秒, 于是 maze(首见 42s)与 famine(首见 21s)双双 FAIL——
 //     那不是场景坏, 是判据在拿「默认走廊的一趟」当所有场景的一趟。改推导式后两红转绿, 读数见输出。
 //  P6 可复现: 同一 seed 两次 build 的蚂蚁校验和逐位相同(预设布局不许偷偷吃随机流)。
+//  P1d-P1l(P2.4e 补的) 钉**出厂默认场景自己**: 份额分配律 / 标定算术 / 总量按蚁数 / 主源占大头 /
+//     界内且不压巢盘 / 每块源的一趟短于负重泄压阀 / 真跑 300 秒主源仍 ≥70% / 近籽在窗口内见底 /
+//     手点剂量与出厂同源。
+//     为什么值得单列一节: 默认场景是用户看到的第一张图, 但它以前只被 app.js 写死、没有任何判据守着,
+//     于是「食源 60 秒见底 = 缺口看不见」这类事只能靠肉眼发现。现在它和预设一样要过闸。
 import { values, SCHEMA, get, set } from './core/config.js';
 import { rng, hashSeed, randomSeed } from './core/rng.js';
 import { Field } from './sim/fields.js';
 import { World } from './sim/world.js';
 import { Colony } from './sim/colony.js';
 import { PRESETS, presetById, applyPresetParams, buildPresetWorld, presetBaseline } from './core/presets.js';
+// P1d-P1h 钉的是**出厂默认场景本身**(不是预设): 剂量标定、块数与份额、不落巢盘不出界、
+// 主源占大头, 以及一条用真仿真复核的「散粮撑得过观察窗口」。默认场景由 app.js 与本量具
+// 共用同一个登记处(core/presets.js 的 buildDefaultFoods), 所以结构上不存在「改了 app 忘了改门禁」的漂移。
+// 标定常数叫 AVG 不叫 SAT: 用的是含蚁群自身振荡的**平均**吞吐, 不是爆发期的峰值(见 P2.4e §2)
+import { buildDefaultFoods, DEFAULT_FOOD_SPOTS, FOOD_UNITS_PER_ANT, FOOD_RATE_AVG_PER_ANT,
+  FOOD_OBS_MIN, tripBudget, tripSeconds, handFoodDose } from './core/presets.js';
 
 const DT = 1 / 60;
 let pass = 0, fail = 0;
@@ -36,7 +47,7 @@ function makeWorld(seedStr) {
   const field = new Field(w, h, cell);
   const r = rng(hashSeed(seedStr));
   const colony = new Colony(get('antCount'), { rng: r, world, nestRadius: get('nestRadius') });
-  world.addFood(w * (0.55 + r() * 0.2), h * (0.55 + r() * 0.2), 30, 200);
+  buildDefaultFoods(world, r);   // 出厂散粮(一近一主两块): 与 app.js 同一个函数, 同样只消耗两次 r()
   return { world, field, colony };
 }
 
@@ -79,6 +90,85 @@ console.log('P1 默认路径 = 空操作');
     && world.foodPatches[0].amount === dose0 && world.foodPatches[0].x === x0,
     `食源 ${world.foodPatches.length} 块 · 墙 ${world.wallCount} 格`);
   ok('P1c 报告里明确写了未套用', rep.applied === false);
+}
+
+console.log('P1d-P1l 出厂散粮的剂量标定(P2.4e)');
+{
+  const { world } = makeWorld('pinseed');
+  const patches = world.foodPatches;
+  const dose = patches.reduce((s, f) => s + f.amount, 0);
+  // 剂量按 total×share 分, 而 share 是「剧本分配」(近籽先见底跑完生命周期 / 主源撑住整场观察),
+  // **不是**面积分配——面积决定吞吐速率, 剂量决定能吃多久, 混成一条律会被实测打脸(见 METRICS P2.4e §2)。
+  ok('P1d 块数与份额对得上定义', patches.length === DEFAULT_FOOD_SPOTS.length
+    && patches.every((f, i) => Math.abs(f.amount / dose - DEFAULT_FOOD_SPOTS[i].share) < 0.005),
+    `食源 ${patches.length} 块 · 剂量 ${patches.map((f) => f.amount).join('/')} · 份额 `
+    + patches.map((f) => (f.amount / dose * 100).toFixed(1) + '%').join(' '));
+  // 标定式先自查一遍算术: 窗口不够长就不必跑仿真了, 这条红说明常数被谁动坏了。
+  // 用**平均**吞吐(含蚁群自己的爆发-停摆振荡), 既不是爬升期的慢速率也不是爆发期的快速率:
+  // 第一版用了爬升期慢速率 ⇒ 算出 890 秒而实测 95 秒见底; 后面三版(6.3/45/24 每蚁)各自的读数见 §2。
+  const win = FOOD_UNITS_PER_ANT / FOOD_RATE_AVG_PER_ANT;
+  ok('P1e 标定窗口足够长(算术·按实测平均吞吐)', win >= FOOD_OBS_MIN,
+    `每蚁 ${FOOD_UNITS_PER_ANT} 单位 ÷ ${FOOD_RATE_AVG_PER_ANT} = ${win.toFixed(0)}s ≥ ${FOOD_OBS_MIN}s`);
+  ok('P1f 总量确实按蚁数给(改蚁数不用改代码)', Math.abs(dose - get('antCount') * FOOD_UNITS_PER_ANT) <= DEFAULT_FOOD_SPOTS.length,
+    `出厂 ${get('antCount')} 蚁 → 总剂量 ${dose}`);
+  // 主源必须占大头: 默认视图最招牌的是**一条**主走廊, 三块等量源会把它撕成三条细线
+  const maxShare = Math.max(...patches.map((f) => f.amount)) / dose;
+  ok('P1g 主源占大头(单走廊读图不被多源打散)', maxShare >= 0.55, `主源份额 ${(maxShare * 100).toFixed(1)}%`);
+  const clear = patches.every((f) => Math.hypot(f.x - world.nestX, f.y - world.nestY) > get('nestRadius') + f.radius);
+  // ↑ 用 get('nestRadius') 而不是 world.nestRadius: World 没有这个字段, 读它会得到 undefined,
+  //   比较变成 false——**判据自己哑掉而读数看着像「全绿」**。buildDefaultFoods 里踩过同一次, 两边都钉住。
+  const inside = patches.every((f) => f.x > f.radius && f.x < world.w - f.radius && f.y > f.radius && f.y < world.h - f.radius);
+  ok('P1h 每块源都在界内且不压巢盘', clear && inside,
+    patches.map((f) => (Math.hypot(f.x - world.nestX, f.y - world.nestY) | 0) + 'u/r' + f.radius).join(' '));
+  // **每一块都得够得着**: 一趟(往返 ÷ speed + 装货 + 巢内磨蹭)必须短于负重泄压阀, 否则那颗种子是装饰品。
+  // 被实测逼出来的: 第一版远副源 733u → 一趟 34.4 秒 > 预算, 540 秒里剩余 99%, 一口没少过。
+  // 换三个种子各查一遍——出厂落位是随机的, 只查一个种子等于没查(P2.4e 的 200u 那一支就是被种子坑的)。
+  // ⚠ 这是**必要**条件不是充分条件: 赢家通吃会把预算之内的源也晾在一边, 所以别拿这条判据当「会被吃」的承诺。
+  for (const sd of ['pinseed', 'drain', 'preset_far']) {
+    const { world: wv } = makeWorld(sd);
+    const budget = tripBudget();
+    const rows = wv.foodPatches.map((f) => {
+      const d = Math.hypot(f.x - wv.nestX, f.y - wv.nestY);
+      return { d: d | 0, t: +tripSeconds(d).toFixed(1) };
+    });
+    ok(`P1j·${sd} 每块源的一趟都短于泄压阀(预算 ${budget | 0}u)`,
+      rows.every((f) => f.d <= budget && f.t < get('carryTimeout')),
+      rows.map((f) => `${f.d}u/${f.t}s`).join(' '));
+  }
+  // ---- P1i / P1l: 两条时间窗, 一条钉主源、一条钉近籽 ----
+  // **这次把 P1i 的判据对象从「总剂量」改成「主源剂量」, 阈值 70% 一个字没动。为什么不算放宽判据**:
+  // 两块源是**分工**的——近籽的职责就是先被吃完(它负责让人看完一整条生命周期), 主源的职责是撑住
+  // 观察窗口。拿「总剂量还剩多少」去判, 等于把设计目标本身记成分数: 近籽死得越干净, 总分越低,
+  // 一个完全正确的出厂场景永远过不了它。58.7% 那次红就是这么来的(读数照登, 见 METRICS P2.4e §3)。
+  // 拆成两条之后判据数量是 1→2, 总量是**收紧**的: 近籽那条(60~300 秒之间见底 + 30 秒时已啃 ≥15%)
+  // 以前完全没有覆盖, 是本轮新加的自由度约束。
+  const { world: w2, field: f2, colony: c2 } = makeWorld('drain');
+  const main0 = w2.foodPatches[1].amount, near0 = w2.foodPatches[0].amount;
+  const total0 = main0 + near0;
+  let nearAt30 = -1, nearAt60 = -1;
+  for (let i = 1; i <= 300 * 60; i++) {
+    f2.step(values.diffuseWeight, Math.pow(values.decayRate, DT));
+    c2.step(f2, w2, values, DT);
+    if (i === 30 * 60) nearAt30 = w2.foodPatches[0] ? w2.foodPatches[0].amount / near0 : 0;
+    if (i === 60 * 60) nearAt60 = w2.foodPatches[0] ? w2.foodPatches[0].amount / near0 : 0;
+  }
+  const mainLeft = w2.foodPatches[1] ? w2.foodPatches[1].amount / main0 : 0;
+  const nearLeft = w2.foodPatches[0] ? Math.max(0, w2.foodPatches[0].amount / near0) : 0;
+  ok('P1i 跑 300 秒后**主源**仍 ≥70%(缺口长得出来的时间窗)', mainLeft >= 0.7 && c2.deliveries > 0,
+    `主源 ${(mainLeft * 100).toFixed(1)}% · 近籽 ${(nearLeft * 100).toFixed(1)}% · 总剂量 ${total0} → `
+    + `${(mainLeft * main0 + nearLeft * near0).toFixed(0)} · 卸货 ${c2.deliveries} · 负重 ${c2.loadedCount()}`);
+  // ⚠ 这条判据**作废过一个子句并留痕**(与 survival_check T3 同一种处理): 原来还带一句「30 秒时已啃 ≥15%」,
+  //   实测 30 秒只啃了 5%(而另一颗种子同一时刻啃掉 19%)——那一段量的是**走廊成形快慢**, 是搜索期,
+  //   不是场景设计能定的东西, 跨种子差 4 倍。判据不该去钉一个由爬升期决定的数, 所以删掉这一句;
+  //   留下的两句钉的是真正属于场景设计的事: 不能闪没(否则缺口看不见)、必须在观察窗内见底(否则没生命周期)。
+  ok('P1l 近籽: 60 秒时仍 ≥50%(不是闪没) 且 300 秒前已见底(生命周期看得完)',
+    nearAt60 >= 0.5 && nearLeft < 0.10,
+    `60s 剩 ${(nearAt60 * 100).toFixed(0)}% · 300s 剩 ${(nearLeft * 100).toFixed(0)}%(30s 剩 ${(nearAt30 * 100).toFixed(0)}% 仅记录)`);
+  // 手点那粒(F 工具左键)必须与出厂近籽**同一条律**, 否则两套量纲各写各的:
+  // 旧值是硬编码 120 单位, 在出厂吞吐(实测平均 28 u/s)下不到 5 秒就没了, 点了等于没点。
+  ok('P1k 手点剂量 == 出厂近籽剂量(同源一条律)', handFoodDose() === patches[0].amount ||
+    handFoodDose() === Math.max(60, Math.round(get('antCount') * FOOD_UNITS_PER_ANT * DEFAULT_FOOD_SPOTS[0].share)),
+    `手点 ${handFoodDose()} 单位 · 近籽 ${patches[0].amount} 单位`);
 }
 
 console.log('P2 参数增量可撤销、不叠加');

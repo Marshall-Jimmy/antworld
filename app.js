@@ -18,7 +18,7 @@ import { Inspector } from './ui/inspector.js';
 // P2.4b 交互层四件套: 滑窗统计 / 场景预设 / 个体事件观察 / 曲线面板 + 录像。
 // 共同点: **全部只读 sim**(见 stats_check S3「开着量具跑 ≡ 一次都不读」的逐位证明)。
 import { ColonyStats, spark } from './core/stats.js';
-import { PRESETS, presetById, applyPresetParams, buildPresetWorld } from './core/presets.js';
+import { PRESETS, presetById, applyPresetParams, buildPresetWorld, buildDefaultFoods, handFoodDose } from './core/presets.js';
 import { AntObserver, EVENT_KINDS, eventKind } from './core/observe.js';
 import { Graph } from './ui/graph.js';
 import { Hud } from './ui/hud.js';
@@ -51,18 +51,16 @@ function buildWorldParams() {
 }
 
 function reset() {
-  const { r, w, h } = buildWorldParams();
+  const { r } = buildWorldParams();
   const nestR = get('nestRadius');
   colony = new Colony(get('antCount'), { rng: r, world, nestRadius: nestR });
   resetExposure(); resetPerception();   // 换一窝/换种子就把曝光表归零:上一窝的剂量水平对这一窝没有参考价值
   inspector && (inspector.colony = colony);
-  // 默认放一块离巢适当距离的食物，方便一进来就看到成道
-  const fx = w * (0.55 + r() * 0.2);
-  const fy = h * (0.55 + r() * 0.2);
-  // ?food=<量> 加大开局那块食源(P2.4): 默认 200 单位在千只蚁下十几分钟就被搬空, 而个体路线记忆
-  // 是个要看多日循环的慢变量——食源先没了, 就只能看到路线废弃, 看不到熟路复用。
+  // 出厂散粮(一近一主两块): 布局与剂量标定都在 core/presets.js 的 buildDefaultFoods 里, 与门禁同源。
+  // ?food=<总剂量> 覆盖出厂总剂量(P2.4 的语义不变, 只是现在它管的是两块源的总量而不是那一块):
+  // 个体路线记忆是个要看多日循环的慢变量, 食源先没了就只能看到路线废弃、看不到熟路复用。
   const FOOD0 = Number(new URLSearchParams(location.search).get('food'));
-  world.addFood(fx, fy, 30, FOOD0 > 0 ? FOOD0 : 200);
+  buildDefaultFoods(world, r, FOOD0);
   stats = { firstFood: null, startT: performance.now(), loadedMax: 0 };
   // 换种子即换天气随机流: 同一个 seed 的风暴排期完全可复现
   weather = new Weather(seed);
@@ -465,7 +463,7 @@ window.addEventListener('mouseup', (e) => {
   } else {
     const dist = Math.hypot(wx - world.nestX, wy - world.nestY);
     if (dist > get('nestRadius') * 1.5) {
-      world.addFood(wx, wy, 26, 120);
+      world.addFood(wx, wy, 26, handFoodDose());     // 剂量与出厂近籽同源, 见 presets.js handFoodDose
       setFollow(-1);
     } else {
       showToast('太靠近巢了，往远点放');
