@@ -12,7 +12,14 @@
 //   home  到家卸货   —— load 从 >0 变 0 且当步在巢盘内: 纯物理到家(P2.2 的诚实化判定)
 //   drop  弃货       —— load 从 >0 变 0 且人在巢盘外: 负重超时泄压阀(carryTimeout)
 //   lost  超时返巢   —— misses 增加: 空手觅食超时并真的走回巢盘(P1.9)
-//   died  被捕杀重生 —— 本步位移远超一步能走的距离(瞬移)且落点在巢盘内, 同群 kills 确实涨了(P2.2)
+//   died  被捕杀     —— 本步位移远超一步能走的距离(瞬移)且落点在巢盘内, 同群 kills 确实涨了(P2.2)
+//   starve 饿死      —— P2.5: 我盯着的那个 **uid** 再也找不到了, 而同群 starved 计数确实涨了
+//   wear   外勤力竭  —— 同上, 涨的是 wornOut(累计外勤秒走到寿命分布的尾巴)
+//
+// ⚠ P2.5 之后"第 i 格"不再是身份: 死亡用 swap-remove 压缩, 队尾那只会被搬进死位。
+//   所以跟拍的身份锚在 **uid** 上(永不复用), 每步先解析一次下标; 解析不到才算死。
+//   旧写法(只看位移瞬移 + kills 涨)在那一版会同时犯两个错: 把被搬走的活蚁判成死, 又把它
+//   留下的那一格(现在是另一只蚁)继续当它读。
 //
 // ⚠ 顺序敏感: 同一步里多个转移同时发生是常态(「到家卸货」当步往往就是下一次「出发」的起点),
 //   所以每条事件带 step 号, 同步内按固定优先级稳定排序, 不靠数组下标猜先后。
@@ -23,11 +30,14 @@ export const EVENT_KINDS = [
   { code: 'drop',  label: '弃货',   mark: '✕', color: '#ff8f6b' },
   { code: 'lost',  label: '超时返巢', mark: '↩', color: '#c39bff' },
   { code: 'died',  label: '被捕杀', mark: '☠', color: '#ff5d5d' },
+  { code: 'starve', label: '饿死',  mark: '†', color: '#ffb86b' },
+  { code: 'wear',   label: '外勤力竭', mark: '✚', color: '#d0d0d0' },
 ];
 export const eventKind = (code) => EVENT_KINDS.find((e) => e.code === code) || null;
 
 // 同一步内的稳定次序: 死 > 弃 > 到 > 发现 > 迷路 > 出发(死最该被看见, 出发最像噪声)
-const ORDER = { died: 0, drop: 1, home: 2, found: 3, lost: 4, start: 5 };
+// 三种死法排在最前(它们终止一切), 彼此之间按"当步哪个计数器涨了"归因, 见文件头的诚实交代。
+const ORDER = { died: 0, starve: 1, wear: 2, drop: 3, home: 4, found: 5, lost: 6, start: 7 };
 
 // 一步内的"合法位移"上限(世界单位): speed 滑杆最大 200 ⇒ 一步最多 200/60≈3.3u, 取 8u 已留 2.4 倍余量。
 // 为什么用位移而不是只用 kills: kills 是**整群**的计数器, 只看它会把「同伴被吃、我正好在巢里」
@@ -50,6 +60,9 @@ export class AntObserver {
     this.prevInNest = false;
     this.prevMisses = 0;
     this.prevKills = 0;
+    this.prevStarved = 0;
+    this.prevWorn = 0;
+    this.uid = -1;          // P2.5: 跟拍的是**这一只**(uid), 不是这一格(下标)
     this.sinceCrumb = 0;
     this.summary = {};         // 每种事件各几次(验收「讲出完整故事」直接读这个)
   }
@@ -63,6 +76,9 @@ export class AntObserver {
     this.prevInNest = false;
     this.prevMisses = 0;
     this.prevKills = colony ? colony.kills : 0;
+    this.prevStarved = colony ? colony.starved : 0;
+    this.prevWorn = colony ? colony.wornOut : 0;
+    this.uid = idx >= 0 && colony && colony.uid ? colony.uid[idx] : -1;
     this.prev = idx >= 0 && colony ? this._read(colony) : null;
   }
 
@@ -77,7 +93,28 @@ export class AntObserver {
 
   // 每逻辑步调用一次(colony.step 之后)。只读: 不写 colony, 不掷随机数(铁律 3/4)。
   observe(colony, world, stepCount, tSec) {
-    if (this.idx < 0 || this.idx >= colony.count) return;
+    if (this.idx < 0 || this.idx >= colony.population) return;
+    // ---- P2.5 身份解析: 下标会被收尸搬动改变, uid 不会 ----
+    if (this.uid >= 0 && colony.uid && colony.uid[this.idx] !== this.uid) {
+      const moved = colony.indexOfUid(this.uid);
+      if (moved >= 0) {
+        this.idx = moved;               // 只是被压缩搬了一格, 故事继续
+      } else {
+        // 找不回来 = 这一只真的死了。归因按"当步哪一类计数器涨了": 同一步里多种死法并存时
+        // 可能张冠李戴(观察器只看得到一只蚁), 但"它死了"这件事本身是确定的。
+        const dK = colony.kills - this.prevKills;
+        const dS = colony.starved - this.prevStarved;
+        const dW = colony.wornOut - this.prevWorn;
+        this.prevKills = colony.kills; this.prevStarved = colony.starved; this.prevWorn = colony.wornOut;
+        this.events.push({ step: stepCount, tSec, code: dS > 0 ? 'starve' : dW > 0 ? 'wear' : 'died',
+                           x: colony.px[this.idx], y: colony.py[this.idx] });
+        this.summary[this.events[this.events.length - 1].code] =
+          (this.summary[this.events[this.events.length - 1].code] || 0) + 1;
+        while (this.events.length > this.eventCap) this.events.shift();
+        this.idx = -1; this.uid = -1; this.prev = null;   // 停止跟拍(app.js 回读 story.idx)
+        return;
+      }
+    }
     const cur = this._read(colony);
     const p = this.prev;
     this.prev = cur;

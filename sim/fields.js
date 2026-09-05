@@ -15,26 +15,41 @@ export class Field {
   }
 
   // ---- 双线性采样（toroidal wrap） ----
+  // P2.6 成本测量后的第一处改刀(全项目唯一一处**位级安全**的规模化优化, 依据见 METRICS P2.6 §3):
+  // 旧写法 8 次 ((v % g) + g) % g —— 双取模是整数除法, V8 微基准实测 4 组 = 64.6 ns,
+  // 而一步里每只蚁要采 3 次触角(开 alarm 时 6 次), 于是这一处占掉每蚁每步 ~5% 的成本。
+  // 换成一次条件回绕实测 4 组 = 18.4 ns。
+  // **为什么位级安全**: 这里改的是"选哪一个下标"的整数运算, 不是任何浮点表达式;
+  // 两种写法对同一输入选出的四个下标完全相同(整数算术无舍入), 所以四钉必须逐位不变——
+  // 这不是我的断言, 是 perf_check 的读数(见 METRICS P2.6 §3 的表)。
+  // 前提: 触角点越界量 |Δ| ≤ sensorDist/cell, 而 (sensorDist/cell)/(worldW/cell) = sensorDist/worldW
+  //       ≤ 80/400 = 0.2 ⇒ ix ∈ [-0.2gw, 1.2gw], 一次加减必定落回 [0, gw)。
+  //       落不回去(参数被人推到边界外)时退回取模, 这条兜底不是装饰: 越界一次以上仍然正确, 只是慢。
   sample(x, y) {
-    const gx = x / this.cellSize;
-    const gy = y / this.cellSize;
-    const ix = Math.floor(gx);
-    const iy = Math.floor(gy);
+    const cs = this.cellSize;
+    const gx = x / cs;
+    const gy = y / cs;
+    let ix = Math.floor(gx);
+    let iy = Math.floor(gy);
     const fx = gx - ix;
     const fy = gy - iy;
 
     const gw = this.gw, gh = this.gh;
-    // wrap
-    const x0 = ((ix % gw) + gw) % gw;
-    const x1 = ((ix + 1) % gw + gw) % gw;
-    const y0 = ((iy % gh) + gh) % gh;
-    const y1 = ((iy + 1) % gh + gh) % gh;
+    // wrap(见上面那段推导: 快路径只有两次比较, 除法只在兜底里)
+    if (ix < 0) ix += gw; else if (ix >= gw) ix -= gw;
+    if (iy < 0) iy += gh; else if (iy >= gh) iy -= gh;
+    if (ix < 0 || ix >= gw) ix = ((ix % gw) + gw) % gw;
+    if (iy < 0 || iy >= gh) iy = ((iy % gh) + gh) % gh;
+    const x0 = ix, y0 = iy * gw;
+    const x1 = ix + 1 === gw ? 0 : ix + 1;
+    const y1 = iy + 1 === gh ? 0 : iy + 1;
 
     const b = this.buf;
-    const v00 = b[y0 * gw + x0];
-    const v10 = b[y0 * gw + x1];
-    const v01 = b[y1 * gw + x0];
-    const v11 = b[y1 * gw + x1];
+    const r1 = y1 * gw;
+    const v00 = b[y0 + x0];
+    const v10 = b[y0 + x1];
+    const v01 = b[r1 + x0];
+    const v11 = b[r1 + x1];
 
     // 双线性插值：v00 + (v10-v00)*fx + (v01-v00)*fy + (v11-v10-v01+v00)*fx*fy
     const a = v00 + (v10 - v00) * fx;
@@ -44,21 +59,27 @@ export class Field {
 
   // ---- 沉积（加性，toroidal） ----
   deposit(x, y, amount) {
-    const gx = Math.round(x / this.cellSize);
-    const gy = Math.round(y / this.cellSize);
     const gw = this.gw, gh = this.gh;
-    const ix = ((gx % gw) + gw) % gw;
-    const iy = ((gy % gh) + gh) % gh;
+    let ix = Math.round(x / this.cellSize);
+    let iy = Math.round(y / this.cellSize);
+    // 同 sample(): 沉积点由蚂蚁位置四舍五入而来, 而位置恒在 [0, w) ⇒ 连回绕都不该发生,
+    // 但这里不赌: 与 sample 同一套"一次条件回绕 + 越界退回取模", 两条路径选出同一个下标。
+    if (ix < 0) ix += gw; else if (ix >= gw) ix -= gw;
+    if (iy < 0) iy += gh; else if (iy >= gh) iy -= gh;
+    if (ix < 0 || ix >= gw) ix = ((ix % gw) + gw) % gw;
+    if (iy < 0 || iy >= gh) iy = ((iy % gh) + gh) % gh;
     this.buf[iy * gw + ix] += amount;
   }
 
   // ---- 沉积到临时缓冲（用于 colony 批量沉积） ----
   depositTo(x, y, amount, target) {
-    const gx = Math.round(x / this.cellSize);
-    const gy = Math.round(y / this.cellSize);
     const gw = this.gw, gh = this.gh;
-    const ix = ((gx % gw) + gw) % gw;
-    const iy = ((gy % gh) + gh) % gh;
+    let ix = Math.round(x / this.cellSize);
+    let iy = Math.round(y / this.cellSize);
+    if (ix < 0) ix += gw; else if (ix >= gw) ix -= gw;
+    if (iy < 0) iy += gh; else if (iy >= gh) iy -= gh;
+    if (ix < 0 || ix >= gw) ix = ((ix % gw) + gw) % gw;
+    if (iy < 0 || iy >= gh) iy = ((iy % gh) + gh) % gh;
     target[iy * gw + ix] += amount;
   }
 

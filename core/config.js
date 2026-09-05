@@ -77,6 +77,21 @@ export const SCHEMA = [
   { key: 'foodLoadRate',default: 0.5,min: 0.05,max: 5,  step: 0.05, label: '采食速率', desc: '采食速率(载货量/秒),连续上升不是秒满' },
   { key: 'depositRate',default: 0.45,min: 0.001,max: 2, step: 0.005, label: '沉积速率', desc: '负重蚂蚁每秒沉积的信息素量' },
 
+  // ---- 能量与生死 (P2.5): survivalMode=0 时 colony 侧整块短路——不读数组、不写数组、不掷随机数,
+  //      所以旧行为 bit 级不变(铁律 2/4)。参数标定与生物学推导全在 sim/energy.js 文件头。
+  { key: 'survivalMode', default: 0, min: 0, max: 1, step: 1, label: '能量生死', desc: '能量与生死总开关:0=不死不饿(旧行为,逐位不变) 1=会饿死/会产蚁/外勤折寿' },
+  { key: 'metBasal',   default: 0.002,  min: 0, max: 0.05, step: 0.001, label: '基础代谢', desc: '维持代谢(能量/秒):只要活着就在烧,不动也烧' },
+  { key: 'metWalk',    default: 0.00015, min: 0, max: 0.005, step: 0.00005, label: '空手能耗', desc: '空手移动的机械代谢(能量/世界单位):按当步实际位移算' },
+  { key: 'metLoad',    default: 0.0003, min: 0, max: 0.01, step: 0.00005, label: '负重能耗', desc: '负重移动的机械代谢(能量/世界单位):真实 3x 自重负载比空手贵' },
+  { key: 'cropFood',   default: 30,   min: 1,   max: 200,  step: 1,   label: '食物兑换', desc: '一单位入库食物能换多少能量(收益/成本 ~100x 量级,见 energy.js)' },
+  { key: 'storageCap', default: 600,  min: 10,  max: 20000, step: 10, label: '储粮上限', desc: '巢储上限(单位):超出就溢掉,没有它储备会无限涨' },
+  { key: 'birthFill',  default: 60,   min: 0,   max: 5000, step: 5,   label: '起募存粮', desc: '存粮高过这条线才招兵(真实饥荒优先保后与幼,先扩军是找死)' },
+  { key: 'birthCost',  default: 4,    min: 0.1, max: 200,  step: 0.1, label: '产蚁成本', desc: '产一只新蚁要花的存粮(单位)' },
+  { key: 'birthRate',  default: 0.004, min: 0, max: 0.2, step: 0.001, label: '产蚁倾向', desc: '每只成蚁每秒的产卵倾向(次/蚁/秒):种群增长的驱动项' },
+  { key: 'broodT',     default: 240,  min: 0,   max: 5000, step: 10,  label: '巢内服务', desc: '新蚁先在巢里做内勤多久才转外勤(秒)。真实 Atta callow 3-4 周 = 等比压缩后 5040-6720s, 在可测窗口里等于"新蚁永不出巢"; 这里再压到 1 天, 保留的是**次序**不是时长比(工程需要)' },
+  { key: 'workLife',   default: 1460, min: 20,  max: 20000, step: 20, label: '外勤寿命', desc: '外勤期望寿命(累计外勤秒):真实 C. bicolor 6.1 天 x 1 天=240s' },
+  { key: 'corpseAlarm', default: 2,   min: 0,   max: 20,  step: 0.5, label: '尸痕报警', desc: '死亡当场留下的报警信息素(远小于捕杀喷溅 8):真实的尸酸信号,本模型不做搬尸' },
+
   // ---- 真实感 (个体差异与停顿; 全 0 = 回到整齐划一的旧机制) ----
   { key: 'speedVar',   default: 0.2, min: 0, max: 0.6, step: 0.05, label: '速度差异', desc: '个体速度差异(±比例):有的蚁快有的蚁慢' },
   { key: 'turnVar',    default: 0.3, min: 0, max: 1,   step: 0.05, label: '转向性格', desc: '个体转向性格(±比例):有的蚁走直线有的蚁爱扭' },
@@ -152,8 +167,8 @@ export const KEYS = SCHEMA.map(s => s.key);
 // 因此: ① 分组表搬到这里(与参数本体同文件), ② 删掉静默 fallback, ③ 每次加载自检——
 // 漏登记/重复登记/与 SCHEMA 顺序不连续 一律 throw。自检防的是"以后加参数的人", 不是这一次。
 // 为了这条不变量成立, 本轮顺手把 nestRadius 搬进「世界」段、confA~D 搬进「置信度」段(只挪位置, 不改数值)。
-export const GROUP_ORDER = ["世界", "感知", "转向", "置信度 (P1.7)", "运动 / 记忆", "觅食经济", "真实感", "天气 / 昼夜", "场"];
-const GROUP_MEMBERS = {"世界": ["worldW", "worldH", "gridCell", "antCount", "nestRadius"], "感知": ["sensorAngle", "sensorDist", "sensorMode", "K_steer", "saturationMode", "K_sat", "alarmSens"], "转向": ["K_chem", "K_home", "K_out", "K_wall", "K_alarm", "sigma", "tumbleAmp", "alpha"], "置信度 (P1.7)": ["K_conf", "sigma_lost", "sigma_road", "cautionSpeed", "K_return", "confA", "confB", "confC", "confD"], "运动 / 记忆": ["speed", "leak", "carryTimeout", "forageTimeout", "missRecover", "K_mem", "memStep", "memForget", "K_route"], "觅食经济": ["foodLoadRate", "depositRate"], "真实感": ["speedVar", "turnVar", "depositVar", "pauseRate", "pauseTime", "nestDwell"], "天气 / 昼夜": ["dayNight", "dayLength", "dayCurve", "dayPhase", "tempBase", "tempSwing", "tempMin", "tempMax", "weather", "stormEvery", "stormLen", "preStormRush", "rainUrge", "rainWash", "windWash", "rainCooling", "rainShelter"], "场": ["diffuseWeight", "decayRate", "peak", "toneMap", "autoPeak", "lateralK", "alarmDecay", "alarmSplash", "alarmPeak", "emptyDeposit"]};
+export const GROUP_ORDER = ["世界", "感知", "转向", "置信度 (P1.7)", "运动 / 记忆", "觅食经济", "能量与生死 (P2.5)", "真实感", "天气 / 昼夜", "场"];
+const GROUP_MEMBERS = {"世界": ["worldW", "worldH", "gridCell", "antCount", "nestRadius"], "感知": ["sensorAngle", "sensorDist", "sensorMode", "K_steer", "saturationMode", "K_sat", "alarmSens"], "转向": ["K_chem", "K_home", "K_out", "K_wall", "K_alarm", "sigma", "tumbleAmp", "alpha"], "置信度 (P1.7)": ["K_conf", "sigma_lost", "sigma_road", "cautionSpeed", "K_return", "confA", "confB", "confC", "confD"], "运动 / 记忆": ["speed", "leak", "carryTimeout", "forageTimeout", "missRecover", "K_mem", "memStep", "memForget", "K_route"], "觅食经济": ["foodLoadRate", "depositRate"], "能量与生死 (P2.5)": ["survivalMode", "metBasal", "metWalk", "metLoad", "cropFood", "storageCap", "birthFill", "birthCost", "birthRate", "broodT", "workLife", "corpseAlarm"], "真实感": ["speedVar", "turnVar", "depositVar", "pauseRate", "pauseTime", "nestDwell"], "天气 / 昼夜": ["dayNight", "dayLength", "dayCurve", "dayPhase", "tempBase", "tempSwing", "tempMin", "tempMax", "weather", "stormEvery", "stormLen", "preStormRush", "rainUrge", "rainWash", "windWash", "rainCooling", "rainShelter"], "场": ["diffuseWeight", "decayRate", "peak", "toneMap", "autoPeak", "lateralK", "alarmDecay", "alarmSplash", "alarmPeak", "emptyDeposit"]};
 
 const GROUP_OF = {};
 {

@@ -4,8 +4,25 @@
 // 性能注记：本文件是热路径（每步 N 只蚂蚁）。所有临时对象（RNG 闭包、
 // ant.js 的 state/out 槽、传感器坐标）都在构造时预分配复用，步进循环零 GC 分配。
 // 数值行为与旧版 bit 级一致（同样的表达式顺序），可用固定 seed 校验和复现。
+//
+// P2.5 · 能量与生死(survivalMode)。这一页的全部新增都受同一个开关门控, 关着的时候
+// 一个数组都不读、一个随机数都不掷 ⇒ 四钉逐位不变(铁律 2/4)。三条结构性决定写在这里, 别翻代码猜:
+//
+// ① **种群只在 [0, capacity] 之间振荡, 数组容量永不扩大**。capacity = 构造时的 antCount,
+//    语义就是「这只巢的容纳上限」。工程理由(不是生物学): memA/memB 在 5000 蚁已经是 2.6 MB,
+//    按 1.6x 预留扩容会直接爆内存预算。
+// ② **不用 alive[] 标志位**: 死亡在主循环**结束之后**的收尾 pass 里做 swap-remove 压缩,
+//    于是「活蚁恒占据 [0, population)」是硬不变量。收益: 渲染/空间哈希/HUD 只把 count 换成
+//    population, 尸体天然不画, 主循环里也不必每步走一遍 alive 分支; 而且因为压缩发生在循环
+//    之外, **没有任何一只蚁会因为搬动而少走一步**(这点比当场删元素干净得多)。
+// ③ **能量在 colony 侧结算, sim/ant.js 一个字不改**。ant.js 管「怎么动」(纯函数+随机流),
+//    colony 管「还动不动得了」。用当步**实际位移**计费: 被墙挡掉的路不该收钱。
+
 
 import { step as antStep } from './ant.js';
+import { ENERGY_FULL, WEAR_ROLL_EVERY, wearRollP, lifeScale } from './energy.js';
+
+const BIRTH_ACC_CAP = 200;   // 产卵倾向最多攒 200 只: 攒三天不可能瞬间爆窝
 
 // 个体路线记忆(P2.4): 每只蚁的个人路线 = 一串航点。32 段 × memStep(默认 24) ≈ 768 世界单位,
 // 覆盖本项目的典型巢–源距离(~290)两倍有余; 记满后丢最旧的半段(靠巢那截最不值钱)。
@@ -51,6 +68,32 @@ export class Colony {
     // 而第一趟找到食物靠的往往是乱走, 不筛就会把弯路焊死成永久路线(实测吞吐反而 −5~9%)。
     this.memLA = new Float32Array(count);
     this.memLB = new Float32Array(count);
+    // ---- P2.5 能量与生死(survivalMode=0 时下面每一行都只是"分配过", 从不被读) ----
+    // 活蚁恒占据 [0, population): 见文件头 ①②
+    this.capacity = count;
+    this.population = count;
+    this.uid = new Uint32Array(count);   // 个体身份:跟拍靠它判断「我跟的那只还在不在这一格里」
+    for (let i = 0; i < count; i++) this.uid[i] = i;
+    this._nextUid = count;
+    this.energy = new Float32Array(count); this.energy.fill(ENERGY_FULL);  // 满胃=1 能量
+    this.workT = new Float32Array(count);   // 累计**外勤**秒(巢内不折旧, ANT_BIOLOGY §四)
+    this.broodT = new Float32Array(count);  // 新蚁巢内服务期剩余秒
+    this._dead = new Int32Array(count); this._deadN = 0;
+    // 生育用**独立随机流**: 借循环里某只蚁的流, 会让它下游的序列被"别人家生了个孩子"污染。
+    this._suS = (this.seedNoise[0] ^ 0x51ed21c3) >>> 0;
+    this._su = () => {
+      self._suS = (self._suS + 0x6d2b79f5) | 0;
+      let t = Math.imul(self._suS ^ (self._suS >>> 15), 1 | self._suS);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    // 储备账(质量守恒, survival_check T2 钉这条): reserve = inflow − foodEaten − birthFood − overflow
+    this.reserve = 0;
+    this.inflow = 0; this.foodEaten = 0; this.birthFood = 0; this.overflow = 0;
+    this.births = 0; this.starved = 0; this.wornOut = 0; this.deaths = 0;
+    this._birthAcc = 0;
+    this.eMin = ENERGY_FULL;
+
     this._persInit = false;
     this.deliveries = 0;   // 累加:成功回巢卸货次数
     this.timeouts = 0;     // 累加:迷路弃货次数
@@ -94,13 +137,24 @@ export class Colony {
   // alarmField(P2.2): 报警信息素场(可空——空表示本步不启用 alarm, 零开销且行为不变)。
   // env(P2.3): 昼夜/天气调制槽(可空)。只影响行动力/觅食计时/巢内滞留走表速率, 不掷额外随机数。
   step(field, world, params, dt, alarmField, env) {
-    const n = this.count;
+    // 上界是**活蚁数**而不是容量: 尸体在收尾 pass 里已被搬出这个区间(文件头 ②)。
+    // survivalMode=0 时 population 恒等于 count ⇒ 旧路径一个分支都不多。
+    const n = this.population;
     this.stepCount++;
     const {
       sensorAngle, sensorDist, speed,
       foodLoadRate, carryTimeout, nestRadius, nestDwell, forageTimeout, missRecover,
       K_mem = 0, memStep = 24, memForget = 2, K_route = 0,
+      // P2.5: 用默认值解构而不是直接取, 是为了让 headless 的老 harness(不传这些键)照样跑。
+      survivalMode = 0, metBasal = 0, metWalk = 0, metLoad = 0, cropFood = 1,
+      storageCap = 0, birthFill = 0, birthCost = 1, birthRate = 0, broodT = 0,
+      workLife = 0, corpseAlarm = 0,
     } = params;
+    // 生死总开关(P2.5): 关着就整块短路——不读 energy/workT/uid、不动 reserve、不掷随机数(铁律 4)。
+    const survOn = survivalMode > 0;
+    // 全群最低能量(HUD 那一行「能量最低」)。每步起点重置、在结算里取小 ⇒ 循环结束时它
+    // 就是活蚁的最小值, 不需要 HUD 每帧再扫一遍 5000 个 Float32(倍速下那是白烧的)。
+    if (survOn) this.eMin = ENERGY_FULL;
 
     let firstFoodAt = -1; // 本步首次吃到食物的蚂蚁索引
     const st = this._st, out = this._out, u = this._u, gauss = this._gauss;
@@ -178,6 +232,13 @@ export class Colony {
         if (wdy > hh2) wdy -= world.h; else if (wdy < -hh2) wdy += world.h;
         // ant.js 每步固定扣 dt, 这里补回差额 → 净扣 dt·pauseRate(速率 1 时补的是 +0, 逐位不变)
         if (wdx * wdx + wdy * wdy <= nestRadius * nestRadius) pauseSet += dt * (1 - env.pauseRate);
+      }
+      // 巢内服务期(P2.5, 年龄多态 lite): 真实 Atta 羽化后先做 3–4 周内勤才转外勤
+      // (ANT_BIOLOGY §四)。这里不改 ant.js, 只每一步把它的滞留计时"续"上一步的量,
+      // 于是它始终处于 ant.js 已有的 paused 分支里(原地不动) —— 零改动的实现方式。
+      if (survOn && this.broodT[i] > 0) {
+        this.broodT[i] -= dt;
+        if (pauseSet < dt * 1.5) pauseSet = dt * 1.5;
       }
       st.pauseT = pauseSet;
       st.speedMul = this.speedMul[i]; st.turnMul = this.turnMul[i]; st.depMul = this.depMul[i];
@@ -337,6 +398,13 @@ export class Colony {
           alarmField.deposit(this.px[i], this.py[i], params.alarmSplash ?? 8);
           this.lastAlarmStep = this.stepCount;
         }
+        if (survOn) {
+          // 有生死模型的时候被吃就是**真死**(个体身份消失), 不再原地变出一只新蚁。
+          // 旧的原地重生是 HANDOVER §7 记的那条简化("即时重生=新蚁"), 它的账现在归储备与产蚁。
+          // 报警已由上面的 alarmSplash 喷溅负责, 所以这里不再叠一层尸痕(corpseAlarm 传 0)。
+          this._markDead(i, alarmField, 0);
+          continue;
+        }
         if (this.load[i] > 0) this._loaded--;
         const ka = u() * Math.PI * 2;
         const kr = nestRadius * Math.sqrt(u());
@@ -441,6 +509,7 @@ export class Colony {
         if (ddx > world.w / 2) ddx -= world.w; else if (ddx < -world.w / 2) ddx += world.w;
         if (ddy > world.h / 2) ddy -= world.h; else if (ddy < -world.h / 2) ddy += world.h;
         if (ddx * ddx + ddy * ddy < nestRadius * nestRadius) {
+          const delivered = this.load[i];   // P2.5: 入库量按**实际载量**记, 不假设它总是满的 1.0
           this.load[i] = 0;
           this.hx[i] = 0;
           this.hy[i] = 0;
@@ -448,6 +517,15 @@ export class Colony {
           this.forageT[i] = 0;  // 新的一轮觅食计时(P1.9)
           this._loaded--;
           this.deliveries++;
+          if (survOn) {
+            // 入库。超过 storageCap 的部分**溢掉**并如实记账——不是"消失":
+            // 没有这条上限, 富场景下储备会以 10 单位/秒 无限涨, "饥荒"这个机制就永远测不出来。
+            this.inflow += delivered;
+            const space = storageCap - this.reserve;
+            const put = space > 0 ? Math.min(delivered, space) : 0;
+            this.reserve += put;
+            this.overflow += delivered - put;
+          }
           if (memOn) { this.memIA[i] = 0; this.memNB[i] = 0; this.memLB[i] = 0; }  // 下一趟从 A 的起点重放(P2.4)
           // 卸货后在巢里磨蹭一会儿再出门(交卸/整理触角); 从该蚁自己的随机流取时长,
           // 所以要把 _s 重新写回 seedNoise。nestDwell=0 时不掷随机数, 旧行为不变。
@@ -527,12 +605,163 @@ export class Colony {
           }
         }
       }
+
+      // ---- P2.5 能量与生死: 代谢 → 进食 → 两条死亡通道 ----
+      // 放在这只蚁**所有**状态转移之后: 卸货(入库)与超时返巢都已落定, 于是"到家这一步就能吃到"
+      // 是同一步内的事实, 不必额外等一步——否则一趟 13s 的行程末尾会凭空多一次饿判。
+      if (survOn) {
+        let wdx = this.px[i] - pxi, wdy = this.py[i] - pyi;
+        if (wdx > hw) wdx -= world.w; else if (wdx < -hw) wdx += world.w;
+        if (wdy > hh) wdy -= world.h; else if (wdy < -hh) wdy += world.h;
+        // 用**实际位移**而不是意图位移(out.dx/dy): 被墙挡掉的路不该收钱(真实蚁撞墙站着不多烧 ATP)。
+        // 也不动既有的 Math.hypot 调用(铁律 5), 这里是新写的独立表达式。
+        const moved = Math.sqrt(wdx * wdx + wdy * wdy);
+        let e = this.energy[i] - metBasal * dt - moved * (this.load[i] > 0 ? metLoad : metWalk);
+        let ndx = this.px[i] - world.nestX, ndy = this.py[i] - world.nestY;
+        if (ndx > hw) ndx -= world.w; else if (ndx < -hw) ndx += world.w;
+        if (ndy > hh) ndy -= world.h; else if (ndy < -hh) ndy += world.h;
+        const atHome = ndx * ndx + ndy * ndy < nestRadius * nestRadius;
+        if (!atHome) this.workT[i] += dt;   // 只有外勤时间折旧(巢内可活数月, ANT_BIOLOGY §四)
+        if (atHome && e < ENERGY_FULL && this.reserve > 0) {
+          // 到巢从储备取食。真实是口对口交哺(trophallaxis)要花时间的, 这里一步吃饱——
+          // **工程需要**: 少一个 feedRate 参数, 代价是"掠过巢心的那 1/60 秒也能吃饱"这点便宜。
+          const bite = Math.min((ENERGY_FULL - e) / cropFood, this.reserve);
+          this.reserve -= bite; this.foodEaten += bite;
+          e += bite * cropFood;
+        }
+        this.energy[i] = e;
+        if (e < this.eMin) this.eMin = e;
+        if (e <= 0) {
+          this.starved++;
+          this._markDead(i, alarmField, corpseAlarm);
+        } else if (workLife > 0 && this.workT[i] > 0 && (this.stepCount % WEAR_ROLL_EVERY) === 0) {
+          // 第二条死亡通道: 外勤折寿(Weibull 型上升风险率, 推导在 sim/energy.js)。
+          // 每 WEAR_ROLL_EVERY 步才掷一次是**算力**决定不是行为决定: 5000 蚁每步一次 exp 太贵,
+          // 而 hazard 在分钟尺度上才动, 0.53s 的采样间隔绰绰有余。
+          const p = wearRollP(this.workT[i] * lifeScale(this.seedNoise[i]), workLife, WEAR_ROLL_EVERY * dt);
+          const gone = u() < p;
+          // 上面的循环前段已经写过一次 seedNoise, 那次写回发生在**本块消耗之前**, 所以这里必须再写。
+          this.seedNoise[i] = this._s;
+          if (gone) { this.wornOut++; this._markDead(i, alarmField, corpseAlarm); }
+        }
+      }
+    }
+
+    // ---- P2.5 收尾 pass: 先收尸压缩, 再结算产蚁 ----
+    // 顺序不许反: 新生儿若占在刚腾出的位上, 下一次循环读到的就是它, 而它这一步什么都没走过。
+    if (survOn) {
+      if (this._deadN > 0) this._compactDead();
+      if (birthRate > 0) this._birthsPass(world, nestRadius, broodT, birthRate, birthFill, birthCost, dt, params);
     }
 
     this.firstFoodAnt = firstFoodAt;
   }
 
+  // 按身份找格子(P2.5): 收尸压缩会把活蚁搬进死位, 于是"第 7 格"这个下标不再能代表同一只蚁。
+  // 一次线性扫(活蚁 ≤ capacity)——只服务于"我跟的那只还在不在", 每帧最多一次, 不进热路径。
+  // 找不到 = 这一只已经死了(uid 永不复用, 所以找不回就是真没了, 不是搬到别处)。
+  indexOfUid(uid) {
+    if (!(uid >= 0)) return -1;
+    for (let i = 0; i < this.population; i++) if (this.uid[i] === uid) return i;
+    return -1;
+  }
+
   // 统计有多少蚂蚁在“觅食”(load>0)。增量维护,O(1)。
+  // 收一具尸(P2.5): 主循环里只登记下标, 真正的数组搬动在整步结束后一次做完(文件头 ②)。
+  // 负载当场清零并回退 _loaded 计数——那半截食物**丢了**, 不进 inflow 账(诚实指标: 死在路上的
+  // 载货不该算成入库量, 正如 P2.2 那次"站着的永动卸货机"不该算)。
+  _markDead(i, alarmField, corpseAlarm) {
+    this._dead[this._deadN++] = i;
+    this.deaths++;
+    if (this.load[i] > 0) { this.load[i] = 0; this._loaded--; }
+    if (alarmField && corpseAlarm > 0) {
+      // 真实的死亡化学痕迹是油酸类**尸酸**, 它触发的是搬尸/垃圾堆(本模型不做搬尸, 工程需要),
+      // 这里只保留"死亡处留下一挥发的报警信号"这一层, 剂量远小于捕杀喷溅(见 config 的 corpseAlarm)。
+      alarmField.deposit(this.px[i], this.py[i], corpseAlarm);
+      this.lastAlarmStep = this.stepCount;
+    }
+  }
+
+  // swap-remove 压缩: 每个死位用队尾的活蚁填。**必须降序处理**, 否则可能把另一具尸体搬进活蚁区。
+  // 降序时 pop 恒 > d(所有比 d 大的死位已经缩掉), 且写只发生在 > d 的死位上 ⇒ d 上的尸体还没被动过。
+  // 因为整块在主循环**之外**, 被搬进来的那只不会错过本步——它本步已经走完了(比当场删元素干净)。
+  _moveAnt(d, s) {
+    this.px[d] = this.px[s]; this.py[d] = this.py[s]; this.theta[d] = this.theta[s];
+    this.hx[d] = this.hx[s]; this.hy[d] = this.hy[s]; this.load[d] = this.load[s];
+    this.tumble[d] = this.tumble[s]; this.lastAsym[d] = this.lastAsym[s];
+    this.seedNoise[d] = this.seedNoise[s];
+    this.carryT[d] = this.carryT[s]; this.pauseT[d] = this.pauseT[s];
+    this.forageT[d] = this.forageT[s]; this.misses[d] = this.misses[s];
+    this.speedMul[d] = this.speedMul[s]; this.turnMul[d] = this.turnMul[s]; this.depMul[d] = this.depMul[s];
+    this.wallSide[d] = this.wallSide[s];
+    this.memNA[d] = this.memNA[s]; this.memNB[d] = this.memNB[s]; this.memIA[d] = this.memIA[s];
+    this.memLX[d] = this.memLX[s]; this.memLY[d] = this.memLY[s];
+    this.memFail[d] = this.memFail[s]; this.memTrips[d] = this.memTrips[s];
+    this.memLA[d] = this.memLA[s]; this.memLB[d] = this.memLB[s];
+    const m = MEM_WPTS * 2;
+    this.memA.copyWithin(d * m, s * m, s * m + m);
+    this.memB.copyWithin(d * m, s * m, s * m + m);
+    // P2.5 的四只数组: uid 跟着搬才谈得上"个体身份"(跟拍因此能知道我跟的那只被搬去了哪一格)
+    this.uid[d] = this.uid[s]; this.energy[d] = this.energy[s];
+    this.workT[d] = this.workT[s]; this.broodT[d] = this.broodT[s];
+  }
+
+  _compactDead() {
+    for (let k = this._deadN - 1; k >= 0; k--) {
+      const d = this._dead[k];
+      const last = --this.population;
+      if (d !== last) this._moveAnt(d, last);
+    }
+    this._deadN = 0;
+  }
+
+  // 产蚁(P2.5): 储备高于 birthFill 才有资格扩军, 每只再扣 birthCost。
+  // 三个门槛各管一件事: birthFill=先攒够家底再招人(真实饥荒优先保蚁后与幼虫)、
+  // birthCost=招人要有代价、capacity=巢的容纳上限(见文件头 ①)。
+  _birthsPass(world, nestRadius, broodT, birthRate, birthFill, birthCost, dt, params) {
+    if (this.population >= this.capacity || this.reserve < birthFill) {
+      this._birthAcc = 0;   // 没条件就把攒下的倾向**丢掉**: 攒三天再瞬间爆窝不是真蚁的行为
+      return;
+    }
+    this._birthAcc += dt * birthRate * this.population;
+    if (this._birthAcc > BIRTH_ACC_CAP) this._birthAcc = BIRTH_ACC_CAP;
+    while (this._birthAcc >= 1 && this.population < this.capacity && this.reserve >= birthCost) {
+      this._birthAcc -= 1;
+      this.reserve -= birthCost;
+      this.birthFood += birthCost;
+      this.births++;
+      this._spawn(world, nestRadius, broodT, params);
+    }
+  }
+
+  // 生一只: 位置在巢盘内均匀散布, 性格倍率与老蚁同一套推导(从 seedNoise 位段), 但没有路线、没有外勤史。
+  _spawn(world, nestRadius, broodT, params) {
+    const i = this.population++;
+    const su = this._su;
+    const a = su() * Math.PI * 2;
+    const r = nestRadius * Math.sqrt(su());
+    this.px[i] = (world.nestX + Math.cos(a) * r + world.w) % world.w;
+    this.py[i] = (world.nestY + Math.sin(a) * r + world.h) % world.h;
+    this.theta[i] = su() * Math.PI * 2;
+    this.hx[i] = 0; this.hy[i] = 0;
+    this.load[i] = 0; this.carryT[i] = 0;
+    this.tumble[i] = 1 + su() * 20;
+    this.lastAsym[i] = 0; this.wallSide[i] = 0;
+    this.forageT[i] = 0; this.misses[i] = 0;
+    this.seedNoise[i] = (su() * 0xffffffff) | 0;
+    const sv = params.speedVar || 0, tv = params.turnVar || 0, dv = params.depositVar || 0;
+    const s = this.seedNoise[i] >>> 0;
+    this.speedMul[i] = 1 - sv + (s & 2047) / 2047 * 2 * sv;
+    this.turnMul[i] = 1 - tv + ((s >>> 11) & 2047) / 2047 * 2 * tv;
+    this.depMul[i] = 1 - dv + ((s >>> 22) & 1023) / 1023 * 2 * dv;
+    this.memNA[i] = 0; this.memNB[i] = 0; this.memIA[i] = 0;
+    this.memFail[i] = 0; this.memTrips[i] = 0; this.memLA[i] = 0; this.memLB[i] = 0;
+    this.energy[i] = ENERGY_FULL;      // 出生即满胃: birthCost 那份粮就是给它备的口粮
+    this.workT[i] = 0;                 // 没有外勤史
+    this.broodT[i] = broodT * (0.7 + 0.6 * su());   // 巢内服务期 ±30% 个体散布
+    this.pauseT[i] = this.broodT[i];   // 一出生就停在巢里做内勤
+    this.uid[i] = this._nextUid++;     // 新身份(永不复用: 老 uid 死了就是死了, 跟拍不会认错蚁)
+  }
   loadedCount() {
     return this._loaded;
   }
@@ -544,6 +773,7 @@ export class Colony {
       hx: this.hx[i], hy: this.hy[i],
       load: this.load[i], tumble: this.tumble[i],
       carryT: this.carryT[i],
+      uid: this.uid[i], energy: this.energy[i], workT: this.workT[i], broodT: this.broodT[i],
     };
   }
 }

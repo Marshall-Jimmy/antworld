@@ -47,10 +47,10 @@ export function updateExposure(field, colony, simT) {
   if (!(values.autoPeak > 0.5)) { _cur = 0; _lastT = -1; exposure.peak = 0; exposure.ref = 0; exposure.n = 0; return; }
   let dt = _lastT < 0 ? -1 : simT - _lastT;
   _lastT = simT;
-  const m = Math.max(1, Math.ceil(colony.count / STRIDE));
+  const m = Math.max(1, Math.ceil((colony.population ?? colony.count) / STRIDE));
   if (!_s || _s.length !== m) _s = new Float32Array(m);
   let j = 0;
-  for (let i = 0; i < colony.count && j < m; i += STRIDE) _s[j++] = field.sample(colony.px[i], colony.py[i]);
+  for (let i = 0; i < (colony.population ?? colony.count) && j < m; i += STRIDE) _s[j++] = field.sample(colony.px[i], colony.py[i]);
   const sub = _s.subarray(0, j);
   sub.sort();
   const ref = sub[j >> 1];

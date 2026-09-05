@@ -56,6 +56,7 @@ export const METRIC_DEFS = [
   { key: 'kill', label: '被捕杀',   unit: '次/秒', kind: 'rate' },
   { key: 'pop',  label: '种群',     unit: '只',   kind: 'mean' },
   { key: 'food', label: '田外存粮', unit: '单位', kind: 'mean' },
+  { key: 'res',  label: '巢内存粮', unit: '单位', kind: 'mean' },
 ];
 
 // 田外存粮: 世界里还没被搬走的食源余量(所有斑块 amount 之和)。只读。
@@ -107,8 +108,12 @@ export class ColonyStats {
     if (!colony) return false;
     if (!this.prev) this.prev = this._snap(colony);
     this._acc.load += colony.loadedCount();
-    this._acc.pop += colony.count;
+    // pop 读**活蚁数**(P2.5 之后 count 是容量, population 才是种群大小); 老 harness 没有
+    // population 字段时退回 count —— 那里两者恒等, 这个 ?? 不是兼容糖, 是让量具在单位测试的
+    // 假 colony 对象上照样能跑(S4 那一组就是假对象)。
+    this._acc.pop += colony.population ?? colony.count;
     this._acc.food += world ? foodTotal(world) : 0;
+    this._acc.res += colony.reserve ?? 0;
     this._k++;
     if (this._k < this.every) return false;
 
@@ -120,6 +125,7 @@ export class ColonyStats {
     R.load.push(this._acc.load / k);
     R.pop.push(this._acc.pop / k);
     R.food.push(this._acc.food / k);
+    R.res.push(this._acc.res / k);
     this.prev = this._snap(colony);
     this._zeroAcc();
     this.version++;

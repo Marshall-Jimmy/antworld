@@ -8,12 +8,17 @@
 // 每条曲线各自归一(独立量程), 因为「60 次/秒的卸货」和「1500 只负重」放同一个 Y 轴上,
 //  后者会把前者压成一条直线, 那是装饰不是测量。量程写在每条线自己前面的数字里。
 import { METRIC_DEFS, spark } from '../core/stats.js';
+import { values } from '../core/config.js';
 
+// 带 when 且条件为假的行【整个不占一行】: 生死没开时种群恒等于容量、巢储恒等于 0,
+// 那两条线会是两条水平直线——占着 26 px 高度告诉用户一个他已经知道的事实。
 const SERIES = [
   { key: 'del',  color: '#8ef0a8' },
   { key: 'load', color: '#ffb84d' },
   { key: 'ab',   color: '#c39bff' },
-  { key: 'food', color: '#7fd6ff', dashed: true },   // 存粮是慢变量: 虚线, 免得抢经济三条线的视觉
+  { key: 'food', color: '#7fd6ff', dashed: true },   // 田外存粮是慢变量: 虚线, 免得抢经济三条线的视觉
+  { key: 'pop',  color: '#ff8f6b', when: () => values.survivalMode > 0 },
+  { key: 'res',  color: '#ffd166', dashed: true, when: () => values.survivalMode > 0 },
 ];
 const ROW_H = 26;
 const W = 236;
@@ -39,11 +44,18 @@ export class Graph {
     if (on) this._sig = '';
   }
 
+  _rows() { return SERIES.filter((s) => !s.when || s.when()); }
+
   resize(dpr) {
     const d = Math.min(dpr || 1, 2);
     this.dpr = d;
-    this.cv.width = Math.round(W * d);
-    this.cv.height = Math.round(ROW_H * SERIES.length * d);
+    const rows = this._rows().length;
+    // 先比尺寸再赋值(P2.4c 的教训: 给 canvas.width 赋同一个数也会重分配 backing store 并清空内容)
+    const bw = Math.round(W * d), bh = Math.round(ROW_H * rows * d);
+    if (this.cv.width !== bw || this.cv.height !== bh) {
+      this.cv.width = bw; this.cv.height = bh;
+      this.cv.style.height = ROW_H * rows + 'px';
+    }
     this._sig = '';
   }
 
@@ -54,6 +66,8 @@ export class Graph {
     if (this._sig === st.version) return;
     this._sig = st.version;
 
+    const rows = this._rows();
+    if (rows.length !== this._nRows) { this._nRows = rows.length; this.resize(this.dpr); }
     const g = this.g, d = this.dpr || 1;
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.clearRect(0, 0, this.cv.width, this.cv.height);
@@ -61,8 +75,8 @@ export class Graph {
     g.font = '10px ui-monospace, Consolas, monospace';
     g.textBaseline = 'middle';
 
-    for (let s = 0; s < SERIES.length; s++) {
-      const cfg = SERIES[s];
+    for (let s = 0; s < rows.length; s++) {
+      const cfg = rows[s];
       const def = METRIC_DEFS.find((m) => m.key === cfg.key);
       const ring = st.rings[cfg.key];
       const y0 = s * ROW_H;

@@ -673,7 +673,8 @@ export class WebGL2Backend extends Backend {
   }
 
   _drawAnts(gl, colony) {
-    const n = colony.count;
+    // P2.5: 画的是**活蚁数**。尸体在收尾 pass 里已被搬出 [0, population) 区间, 天然不会被画到。
+    const n = colony.population ?? colony.count;
     if (n === 0) return;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.antVBO);
     if (!this.antBuf || this.antBuf.length < n * 4) {

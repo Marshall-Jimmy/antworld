@@ -74,8 +74,13 @@ function reset() {
   simSec = 0;
   statsWin.reset();
   story.nestRadius = nestR;
-  story.select(followIdx >= colony.count ? -1 : followIdx, colony);
-  if (followIdx >= 0) toast(`跟拍对象已随新 colony 重置`);
+  story.select(followIdx >= colony.population ? -1 : followIdx, colony);
+  // 跟拍状态以观察器为准: 换一窝之后"第 7 号"是完全不同的另一只蚁, 跟不动就停镜头,
+  // 不许默默跟着一个仍然在范围内的旧下标(那是把别人的故事安在它头上)。
+  if (followIdx >= 0) {
+    followIdx = story.idx;
+    showToast(followIdx >= 0 ? "跟拍对象已随新 colony 重置" : "跟拍的那只蚁不在了, 镜头停下(G 跟下一只)");
+  }
   // 预设布局在 reset 之后重放: reset() 会按出厂布局摆那块默认食源, 预设要把它换成自己的场景。
   if (presetId && presetId !== 'default') {
     const rep = buildPresetWorld(presetId, world);
@@ -122,7 +127,17 @@ function step(dt) {
   }
   // ---- P2.4b 量具: 每逻辑步读一次(stats/observe 都是只读, 见 stats_check S3 的逐位证明) ----
   statsWin.sample(colony, world);
-  if (followIdx >= 0) story.observe(colony, world, colony.stepCount, simSec);
+  if (followIdx >= 0) {
+    story.observe(colony, world, colony.stepCount, simSec);
+    // 观察器按 uid 自己解析下标(P2.5): 被收尸压缩搬动 → story.idx 变了; 那只蚁死了 → 变成 -1。
+    // 回读而不是各算各的, 免得"跟拍的那只"在镜头/检视面板/故事线三处指向三只不同的蚁。
+    if (story.idx !== followIdx) {
+      const gone = story.idx < 0;
+      followIdx = story.idx;
+      inspector.select(followIdx);
+      if (gone) showToast('跟拍的那只蚁已经死了(镜头停下, G 可跟下一只)');
+    }
+  }
 }
 
 // ---------- 渲染装配 ----------
@@ -194,7 +209,7 @@ function screenToWorld(sx, sy) {
 const FOLLOW_ZOOM = () => Math.min(60, Math.max(camera.zoom * 3.2, 1.4));
 let followZoom = 0;
 function setFollow(idx) {
-  const n = idx === -1 ? -1 : (idx >= 0 && idx < colony.count ? idx : -1);
+  const n = idx === -1 ? -1 : (idx >= 0 && idx < colony.population ? idx : -1);
   followIdx = n;
   story.nestRadius = get('nestRadius');
   story.select(n, colony);            // 换对象即清历史(两只蚁的故事不许缝成一只)
@@ -208,7 +223,7 @@ function setFollow(idx) {
 // 环面寻址是这里的关键细节: 世界是环面, 蚂蚁从 x=1990 迈一步到 x=2 是**正常走 straight**,
 // 但按普通坐标差算相机要往回追 1988 个单位。所以位移一律取半宽内的最短差, 相机也按最短差插值。
 function updateFollow(dt) {
-  if (followIdx < 0 || followIdx >= colony.count) return;
+  if (followIdx < 0 || followIdx >= colony.population) return;
   const W = get('worldW'), H = get('worldH');
   let dx = colony.px[followIdx] - camera.cx, dy = colony.py[followIdx] - camera.cy;
   if (dx > W / 2) dx -= W; else if (dx < -W / 2) dx += W;
@@ -313,13 +328,13 @@ refit();
 const QRY = new URLSearchParams(location.search);
 // 注意必须先判参数存在: Number(null) 等于 0, 直接 Number() 会把「没带参数」当成「检视 0 号蚁」。
 const INSPECT0 = QRY.get('inspect') === null ? -1 : Number(QRY.get('inspect'));
-if (Number.isInteger(INSPECT0) && INSPECT0 >= 0 && INSPECT0 < colony.count) inspector.select(INSPECT0);
+if (Number.isInteger(INSPECT0) && INSPECT0 >= 0 && INSPECT0 < colony.population) inspector.select(INSPECT0);
 // ?preset=maze 让验收图/分享链接直接落在某个场景上; ?follow=N 直接跟拍第 N 只蚁。
 // 两者都只在 URL 明确带着时才生效——不带就等于出厂路径, 一个字节都不变(红线 2)。
 const PRESET0 = QRY.get('preset');
 if (PRESET0) loadPreset(PRESET0);
 const FOLLOW0 = QRY.get('follow') === null ? -1 : Number(QRY.get('follow'));
-if (Number.isInteger(FOLLOW0) && FOLLOW0 >= 0 && FOLLOW0 < colony.count) setFollow(FOLLOW0);
+if (Number.isInteger(FOLLOW0) && FOLLOW0 >= 0 && FOLLOW0 < colony.population) setFollow(FOLLOW0);
 pushUrl();
 
 // ---------- 输入 ----------
@@ -386,7 +401,7 @@ window.addEventListener('mouseup', (e) => {
   }
   if (tool !== 'food') return;   // wall/erase 的单击已在 mousedown 处理
   // 左键：先找蚂蚁检视，没有就放食物
-  hash.build(colony.px, colony.py, colony.count);
+  hash.build(colony.px, colony.py, colony.population);
   const nearR = Math.max(14 / camera.zoom, get('gridCell') * 2);
   const idx = hash.nearest(wx, wy, nearR);
   if (idx >= 0) {
@@ -443,9 +458,9 @@ function toggleFollow() {
   if (cand >= 0) { setFollow(cand); showToast(`跟拍蚂蚁 #${cand}`); return; }
   // 没有选中对象时挑「此刻正在负重的那只」: 空手在巢里打转的蚁讲不出故事(前几秒全是停顿),
   // 而负重蚁马上要回家——一跟就能看见「到家卸货」这个最该被看见的事件。
-  hash.build(colony.px, colony.py, colony.count);
+  hash.build(colony.px, colony.py, colony.population);
   let pick = -1;
-  for (let i = 0; i < colony.count && pick < 0; i++) if (colony.load[i] > 0) pick = i;
+  for (let i = 0; i < colony.population && pick < 0; i++) if (colony.load[i] > 0) pick = i;
   if (pick < 0) { showToast('暂时没有负重蚁可跟, 先点一只蚂蚁'); return; }
   setFollow(pick);
   showToast(`跟拍蚂蚁 #${pick}(G 或右键取消)`);
@@ -563,7 +578,11 @@ function hudCtx() {
     backend: RENDER_BACKEND,
     speed: ts === 0 ? '暂停' : ts + '×',
     speedLevel: ts === 0 ? '暂停' : ts + '×',
-    pop: colony.count,
+    // P2.5: 种群读数 = 活蚁数; 容量单独给一行"上限", 不然用户以为 5000 这个数字在骗人
+    pop: colony.population,
+    popCap: colony.capacity,
+    survOn: values.survivalMode > 0,
+    births: colony.births, deaths: colony.deaths, starved: colony.starved, worn: colony.wornOut,
     loaded: colony.loadedCount(),
     delNow: statsWin.label('del'),
     firstFood: stats.firstFood === null ? '—' : stats.firstFood.toFixed(1) + 's',
@@ -575,6 +594,14 @@ function hudCtx() {
     walls: world.wallCount,
     predator: world.predator ? '就位' : '无',
     delTot: colony.deliveries, tot: colony.timeouts, abTot: colony.aborts, killTot: colony.kills,
+    // P2.5 三本账(只在生死开着时进 HUD, 见 ui/hud.js): 入库/取食/产蚁耗/溢出 + 田外余粮 + 最低能量
+    inflow: colony.inflow.toFixed(1), eaten: colony.foodEaten.toFixed(1),
+    birthFood: colony.birthFood.toFixed(1), overflow: colony.overflow.toFixed(1),
+    resNow: colony.reserve.toFixed(1),
+    // 田外余粮走曲线量具的读数而不是再扫一遍 world: 它已经是"最近 1 秒的窗内均值",
+    // 比瞬时值更适合给人看(而且省掉每帧一次 foodPatches 求和)。
+    fieldFood: statsWin.label('food'),
+    eMin: colony.eMin.toFixed(2),
     seed,
     preset: presetId || 'default',
     presetName: p ? p.name : '默认走廊',

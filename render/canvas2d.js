@@ -153,7 +153,11 @@ export class Canvas2DBackend extends Backend {
     // 两套色提前算好: 5000 只蚁的循环里绝不拼字符串
     const cLoaded = rgba([255, 210, 90], 0.9, amb);
     const cIdle = rgba([120, 190, 255], 0.85, amb);
-    for (let i = 0; i < colony.count; i++) {
+    // P2.5: 画的是活蚁数(尸体已搬出 [0,population))。
+    // 括号必须有: 写 `i < a ?? b` 会被解析成 `(i < a) ?? b`, 而布尔永不 nullish
+    // => 兜底那一半是死代码, 没有 population 字段的假 colony 对象会一只蚁都不画。
+    const nAnts = colony.population ?? colony.count;
+    for (let i = 0; i < nAnts; i++) {
       const load = colony.load[i];
       g.fillStyle = load > 0.5 ? cLoaded : cIdle;
       g.fillRect(colony.px[i] * sx, colony.py[i] * sx, apx, apx);

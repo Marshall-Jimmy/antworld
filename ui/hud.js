@@ -72,7 +72,9 @@ export class Hud {
       `fps ${c.fps.toFixed(0)} · ${c.backend} · ${c.speed}` +
         (c.preset && c.preset !== 'default' ? ` · ${c.presetName}` : '') +
         (c.pace ? ` · ${c.pace}` : ''),
-      `蚁 ${c.pop} · 负重 ${c.loaded} · 卸货 ${c.delNow}/秒 · 首次发现 ${c.firstFood}`,
+      c.survOn
+        ? `种群 ${c.pop}/${c.popCap} · 巢储 ${c.resNow} · 出生 ${c.births} 死亡 ${c.deaths} (饿 ${c.starved} 竭 ${c.worn})`
+        : `蚁 ${c.pop} · 负重 ${c.loaded} · 卸货 ${c.delNow}/秒 · 首次发现 ${c.firstFood}`,
     ];
     const l1 = [];
     if (c.envLine) {
@@ -86,8 +88,11 @@ export class Hud {
       `墙 ${c.walls} 格(X 清) · 捕食者 ${c.predator} · 卸货累计 ${c.delTot} · 弃货 ${c.tot} · 空手返巢 ${c.abTot} · 被捕杀 ${c.killTot}`,
       `左键 检视/放食物/画墙 · 右键 移除/平移 · 滚轮 缩放 · 点蚁自动跟拍(G 停) · V 录像 · H 界面详略 · M 曲线`,
       `seed ${c.seed} · 预设 ${c.preset} · 参数 ${c.paramCount} 项已偏离出厂`,
+      // 生死开着时经济那一行不够用: 出生/死亡/储备三本账必须同屏(它们互相咬合)
+      c.survOn ? `经济入库 ${c.inflow} · 取食 ${c.eaten} · 产蚁耗 ${c.birthFood} · 溢出 ${c.overflow}` : null,
+      c.survOn ? `蚁 ${c.loaded} 负重 · 田外余粮 ${c.fieldFood} · 全群最低能量 ${c.eMin}` : null,
     ];
     if (c.followLine) l2.unshift(c.followLine);
-    return { l0, l1, l2 };
+    return { l0, l1, l2: l2.filter((x) => x !== null) };
   }
 }

@@ -175,6 +175,14 @@ export class Inspector {
       `朝向   ${(((th * 180 / Math.PI + 540) % 360) - 180).toFixed(0)}°\n` +
       `|h|    ${homeDist.toFixed(1)}  (回家向量长度)\n` +
       `负重   ${this.colony.carryT[i].toFixed(2)}s / ${get('carryTimeout').toFixed(0)}s\n` + memLine;
+    // 能量与生死读数(P2.5): 关着的时候不谎称"它精力无限", 直接标"关"(与上面 memLine 同一条纪律)。
+    if (get('survivalMode') > 0) {
+      const e = this.colony.energy[i], wt = this.colony.workT[i], bt = this.colony.broodT[i];
+      txt += '能量   ' + e.toFixed(2) + '/1 满胃 · 外勤 ' + wt.toFixed(0) + 's / 期望 ' +
+        get('workLife').toFixed(0) + 's' +
+        (bt > 0 ? ' · 巢内服务中还剩 ' + bt.toFixed(0) + 's' : '') +
+        '\nid     ' + this.colony.uid[i] + ' (换过格子也还是这一只; 消失=已死)\n';
+    }
     // ---- P2.4b 个体故事: 这只蚁「讲得出完整故事」的那一半(另一半是面包屑 + 事件标记) ----
     // 时间是**仿真内**秒数, 不是墙钟: 64 倍速下墙钟过 1 分钟、仿真过 64 分钟,
     // 用墙钟标出来的时间线会和曲线/录像里的读数互相对不上。
