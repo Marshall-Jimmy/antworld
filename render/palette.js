@@ -73,8 +73,9 @@ export function rampColor(stops, u, out) {
 const LUT_N = 1024;
 const lutCache = new Map();
 
-export function rampLut(stops) {
-  const key = stops === FIELD_STOPS ? 'field' : stops === ALARM_STOPS ? 'alarm' : 'other';
+export function rampLut(stops, name) {
+  // name 必须给: 否则两张新表(墨色/报警墨)会共用同一个 other 槽, 拿到彼此的 LUT
+  const key = name || (stops === FIELD_STOPS ? 'field' : stops === ALARM_STOPS ? 'alarm' : 'other');
   let lut = lutCache.get(key);
   if (lut) return lut;
   lut = new Uint8Array((LUT_N + 1) * 3);

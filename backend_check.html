@@ -1,0 +1,85 @@
+<!doctype html>
+<!--
+  backend_check.html — 渲染后端能力/编译自诊页(P2.3.5 转正, 登记在 HANDOVER §2/§3)。
+  为什么要有这一页: P2.3.5 抓到 WebGL2 静默编译失败两次(四参 max / 顶点数与绘制数不同源),
+  两次都是「画面看起来完全正常」地跑在 Canvas2D 兜底上 —— 因为 console.warn 在浏览器里没人看得见,
+  而无头门禁(perf_check / look_check 的像素组)走的是 PNG 管线, 它绕开 DOM 也绕开着色器。
+  静态 lint 能钉住「源码写错了」, 钉不住「这台机器的驱动不给你这个扩展」。这一页补的就是后者。
+
+  它只做三件事: ① 能力报告 ② 七对着色器逐个 compile+link ③ 真后端 init() 并自报 failReason。
+  ⚠ 它**不跑**真实 colony/render 循环 —— 上一轮的探针页就是探针, 探针一旦开始跑仿真就变成了
+  第二个 app, 而它没有 HUD、没有参数面板、没有校验和, 读出来的东西谁也不认。
+  用法: 浏览器打开 /backend_check.html, 或 node 起 dev server 后看这一页; 全文本输出, 可复制。
+-->
+<html><head><meta charset="utf-8"><title>BACKEND CHECK</title>
+<style>body{background:#111418;color:#dfe6ee;font:13px/1.55 ui-monospace,Consolas,monospace;margin:0;padding:14px}
+h1{font-size:14px;margin:0 0 8px}b{color:#8fe0a0}i{color:#ff9c8a;font-style:normal}.bad{color:#ff9c8a}.ok{color:#8fe0a0}</style></head>
+<body><h1>渲染后端自诊 · backend_check</h1><pre id="out">RUNNING</pre>
+<script type="module">
+import { WebGL2Backend, shaderSources } from '/render/webgl2.js';
+const L = [];
+const line = (s) => L.push(s);
+const flag = (v) => v ? '<b>OK</b>' : '<i>FAIL</i>';
+
+// ---- ① 能力 ----
+line('== ① 能力 ==');
+let gl = null;
+const probe = document.createElement('canvas');
+probe.width = 64; probe.height = 64;
+try { gl = probe.getContext('webgl2'); } catch (e) { line('getContext 抛: ' + e.message); }
+if (!gl) {
+  line('webgl2 = null ⇒ 这台机器/这个浏览器给不了 WebGL2, 应用会走 Canvas2D 兜底');
+  document.getElementById('out').innerHTML = L.join('\n');
+  throw new Error('no webgl2');
+}
+const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+line('renderer        = ' + (dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)));
+line('gl_version      = ' + gl.getParameter(gl.VERSION));
+line('glsl_version    = ' + gl.getParameter(gl.SHADING_LANGUAGE_VERSION));
+line('float_linear    = ' + flag(!!gl.getExtension('OES_texture_float_linear')) + '   ← 信息素场是 float 纹理, 没有它只能 NEAREST(会看见格子)');
+line('MAX_TEXTURE_SIZE= ' + gl.getParameter(gl.MAX_TEXTURE_SIZE) + '   ← 必须 >= 场网格 ' + 250 + 'x' + 163);
+line('MAX_RENDERBUFFER= ' + gl.getParameter(gl.MAX_RENDERBUFFER_SIZE));
+line('MAX_ATTRIBS     = ' + gl.getParameter(gl.MAX_VERTEX_ATTRIBS) + '   ← 蚂蚁 instanced 用到 5 个');
+line('MAX_VEXT_UNIFORM= ' + gl.getParameter(gl.MAX_VERTEX_UNIFORM_VECTORS));
+line('MAX_FEXT_UNIFORM= ' + gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_VECTORS));
+
+// ---- ② 逐对着色器 compile + link ----
+line('');
+line('== ② 着色器(与 render/webgl2.js 同一张登记表, 不复制源码) ==');
+function compile(type, src, name) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(name + ': ' + gl.getShaderInfoLog(s).trim());
+  return s;
+}
+let nBad = 0;
+for (const [name, vs, fs] of shaderSources()) {
+  const rec = [];
+  try {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, vs, name + '/vs'));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs, name + '/fs'));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('link ' + name + ': ' + gl.getProgramInfoLog(p).trim());
+    line('  ' + name.padEnd(7) + ' ' + flag(true) + '   vs/fs ' + vs.split('\n').length + '/' + fs.split('\n').length + ' 行');
+    gl.deleteProgram(p);
+  } catch (e) { nBad++; line('  ' + name.padEnd(7) + ' ' + flag(false) + '   ' + e.message.replace(/\s+/g, ' ')); }
+}
+line('  ' + (nBad === 0 ? '七对全部编译+链接通过' : '有 ' + nBad + ' 对失败 ⇒ 应用会静默兜底, 别看画面, 看这里'));
+
+// ---- ③ 真后端 init() ----
+line('');
+line('== ③ WebGL2Backend.init() ==');
+const c2 = document.createElement('canvas');
+c2.width = 320; c2.height = 200;
+const w = new WebGL2Backend();
+let ok = false, err = '';
+try { ok = w.init(c2); } catch (e) { err = String((e && e.message) || e).replace(/\s+/g, ' '); }
+line('  init() = ' + flag(ok) + '   ctor = ' + w.constructor.name);
+line('  failReason = ' + (ok ? (w.failReason === '' ? "''(空 = 正常)" : JSON.stringify(w.failReason)) : (err || w.failReason)));
+line('  linearOK   = ' + w.linearOK + '   (场纹理用 LINEAR 还是 NEAREST)');
+line('  getError   = 0x' + (w.ctx ? w.ctx.getError().toString(16) : 'n/a'));
+line('');
+line(ok && nBad === 0 ? '结论: 这台机器上跑的确实是 WebGL2。' : '结论: 上面任何一行 FAIL 都意味着浏览器里的画面不是 WebGL2 画面 —— 应用会在 HUD 第一行自报兜底原因。');
+document.getElementById('out').innerHTML = L.join('\n');
+</script></body></html>

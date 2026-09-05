@@ -31,7 +31,8 @@ export class World {
   }
 
   addFood(x, y, radius, amount) {
-    this.foodPatches.push({ x, y, radius, amount });
+    // a0 = 出生量: 只被渲染层用来算「已啃掉的比例」(P2.3.5 的缺口), sim 一个字节都不读它
+    this.foodPatches.push({ x, y, radius, amount, a0: amount });
     this._idxDirty = true;
   }
 

@@ -143,10 +143,17 @@ function step(dt) {
 // ---------- 渲染装配 ----------
 let canvas = $('canvas');
 let backend;
+// 兜底必须自报原因(P2.3.5 事故): 一个四参 max() 让 WebGL2 编译失败并被静默兜底, 而 console.warn 在浏览器里
+// 没人看得见 —— 后端名会上 HUD 是 P2.3.1 立的规矩, 但只说「兜底」不说为什么, 等于让人自己去翻控制台。
+let backendFail = '未尝试';
 try {
   const w = new WebGL2Backend();
-  if (w.init(canvas)) backend = w;
-} catch (err) { console.warn('WebGL2 启动失败:', err); }
+  if (w.init(canvas)) { backend = w; backendFail = ''; }
+  else backendFail = w.failReason || 'init()=false';
+} catch (err) {
+  backendFail = String((err && err.message) || err).split(/\r?\n/)[0].replace(/\s+/g, ' ').slice(0, 70);
+  console.warn('WebGL2 启动失败:', err);
+}
 if (!backend) {
   // 画布一旦拿到过 webgl2 上下文, 再要 getContext('2d') 永远返回 null(规范行为):
   // 兜底必须换一块干净的画布, 否则任何 WebGL 故障都会变成整屏黑 + fillStyle 崩溃。
@@ -160,7 +167,9 @@ if (!backend) {
 }
 // 渲染层必须自证(P2.3.1 教训15): P2.3 起 6 处 `uniform vec3 uAmbient;;` 让 WebGL2 编译失败并被静默兜底,
 // 期间浏览器里跑的一直是 Canvas2D 兜底(而兜底又因画布已被占用而黑屏)。无 warn 不等于活着: 后端名直接上 HUD。
-const RENDER_BACKEND = backend instanceof Canvas2DBackend ? 'Canvas2D(兜底)' : 'WebGL2';
+const RENDER_BACKEND = backend instanceof Canvas2DBackend
+  ? 'Canvas2D(兜底: ' + backendFail + ')'
+  : 'WebGL2';
 console.info(`渲染后端: ${RENDER_BACKEND}`);
 
 const HUD = $('hud');

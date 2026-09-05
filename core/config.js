@@ -155,6 +155,16 @@ export const SCHEMA = [
   { key: 'emptyDeposit',  default: false, options: [false, true],
     label: '空手沉积(诊断)', desc: '诊断:空手蚂蚁是否也沉积信息素(定位 0.34 高地上限的是否来自食物打转)' },
 
+  // ---- P2.3.5 画面外观(用户点名): 白纸 + 墨色走廊 + 黑壳工蚁 + 会被啃的食物 ----
+  // 三条参数各钉一层, 每一层都能单独退回旧原码: 混在一起就没法回答「这张图比那张好在哪」。
+  // 定义全在 render/look.js(形状表/色表/GLSL 生成), 这里只登记旋钮 —— 面板与三条渲染路径同源。
+  { key: 'inkMode',   default: 1,    min: 0,   max: 1,    step: 1,    label: '白纸墨色', desc: '画面基底: 1=白纸+墨渍(信息素是染色的土, 蚂蚁是不透明的虫体) / 0=旧黑底加光(逐字节退回 P2.3.4)' },
+  { key: 'trailInk',  default: 1.2,  min: 0.2, max: 3,    step: 0.05, label: '走廊墨色', desc: '墨覆盖度乘子: 覆盖=min(0.94, 该值×tone^1.6)。1.2 让弥散底噪几乎不上纸(tone=0.07→2%)而主廊道仍透光(tone=0.5→40%)' },
+  { key: 'antStyle',  default: 1,    min: 0,   max: 1,    step: 1,    label: '黑壳工蚁', desc: '蚂蚁形体: 1=头/胸/腹三段 + 腹柄细腰 + 膝状触角(lod≥1) + 六足与大颚(lod≥2), 近黑几丁质 / 0=旧的冷蓝拉长光点' },
+  { key: 'antLen',    default: 11,   min: 4,   max: 28,   step: 0.5,  label: '蚁体长', desc: '一只蚁的体长(屏幕像素, 不随缩放变——缩放里始终是这么大, 所以远处不会糊成一团也读得出触角)。触角尖约 1.75×, 腿跨约 0.6×' },
+  { key: 'antVar',    default: 0.7,  min: 0,   max: 1,    step: 0.05, label: '蚁个体差异', desc: '按 uid 哈希在 3 档几丁质色与 ±12% 体长之间取一档(0=全群同一只蚁复制粘贴)。真实工蚁品级与日龄都不同色不同大小' },
+  { key: 'foodLook',  default: 1,    min: 0,   max: 1,    step: 1,    label: '食物会被啃', desc: '食物斑块: 1=实物种子, 随取食整体缩小并啃出扇形缺口(缺口角度 ∝ 已吃掉的比例, 边缘按角向 bin 抖动) / 0=旧的绿色软光斑' },
+
   // ---- 置信度调制开关 (P1.7) ----
 ];
 
@@ -167,8 +177,8 @@ export const KEYS = SCHEMA.map(s => s.key);
 // 因此: ① 分组表搬到这里(与参数本体同文件), ② 删掉静默 fallback, ③ 每次加载自检——
 // 漏登记/重复登记/与 SCHEMA 顺序不连续 一律 throw。自检防的是"以后加参数的人", 不是这一次。
 // 为了这条不变量成立, 本轮顺手把 nestRadius 搬进「世界」段、confA~D 搬进「置信度」段(只挪位置, 不改数值)。
-export const GROUP_ORDER = ["世界", "感知", "转向", "置信度 (P1.7)", "运动 / 记忆", "觅食经济", "能量与生死 (P2.5)", "真实感", "天气 / 昼夜", "场"];
-const GROUP_MEMBERS = {"世界": ["worldW", "worldH", "gridCell", "antCount", "nestRadius"], "感知": ["sensorAngle", "sensorDist", "sensorMode", "K_steer", "saturationMode", "K_sat", "alarmSens"], "转向": ["K_chem", "K_home", "K_out", "K_wall", "K_alarm", "sigma", "tumbleAmp", "alpha"], "置信度 (P1.7)": ["K_conf", "sigma_lost", "sigma_road", "cautionSpeed", "K_return", "confA", "confB", "confC", "confD"], "运动 / 记忆": ["speed", "leak", "carryTimeout", "forageTimeout", "missRecover", "K_mem", "memStep", "memForget", "K_route"], "觅食经济": ["foodLoadRate", "depositRate"], "能量与生死 (P2.5)": ["survivalMode", "metBasal", "metWalk", "metLoad", "cropFood", "storageCap", "birthFill", "birthCost", "birthRate", "broodT", "workLife", "corpseAlarm"], "真实感": ["speedVar", "turnVar", "depositVar", "pauseRate", "pauseTime", "nestDwell"], "天气 / 昼夜": ["dayNight", "dayLength", "dayCurve", "dayPhase", "tempBase", "tempSwing", "tempMin", "tempMax", "weather", "stormEvery", "stormLen", "preStormRush", "rainUrge", "rainWash", "windWash", "rainCooling", "rainShelter"], "场": ["diffuseWeight", "decayRate", "peak", "toneMap", "autoPeak", "lateralK", "alarmDecay", "alarmSplash", "alarmPeak", "emptyDeposit"]};
+export const GROUP_ORDER = ["世界", "感知", "转向", "置信度 (P1.7)", "运动 / 记忆", "觅食经济", "能量与生死 (P2.5)", "真实感", "天气 / 昼夜", "场", "画面外观 (P2.3.5)"];
+const GROUP_MEMBERS = {"世界": ["worldW", "worldH", "gridCell", "antCount", "nestRadius"], "感知": ["sensorAngle", "sensorDist", "sensorMode", "K_steer", "saturationMode", "K_sat", "alarmSens"], "转向": ["K_chem", "K_home", "K_out", "K_wall", "K_alarm", "sigma", "tumbleAmp", "alpha"], "置信度 (P1.7)": ["K_conf", "sigma_lost", "sigma_road", "cautionSpeed", "K_return", "confA", "confB", "confC", "confD"], "运动 / 记忆": ["speed", "leak", "carryTimeout", "forageTimeout", "missRecover", "K_mem", "memStep", "memForget", "K_route"], "觅食经济": ["foodLoadRate", "depositRate"], "能量与生死 (P2.5)": ["survivalMode", "metBasal", "metWalk", "metLoad", "cropFood", "storageCap", "birthFill", "birthCost", "birthRate", "broodT", "workLife", "corpseAlarm"], "真实感": ["speedVar", "turnVar", "depositVar", "pauseRate", "pauseTime", "nestDwell"], "天气 / 昼夜": ["dayNight", "dayLength", "dayCurve", "dayPhase", "tempBase", "tempSwing", "tempMin", "tempMax", "weather", "stormEvery", "stormLen", "preStormRush", "rainUrge", "rainWash", "windWash", "rainCooling", "rainShelter"], "场": ["diffuseWeight", "decayRate", "peak", "toneMap", "autoPeak", "lateralK", "alarmDecay", "alarmSplash", "alarmPeak", "emptyDeposit"], "画面外观 (P2.3.5)": ["inkMode", "trailInk", "antStyle", "antLen", "antVar", "foodLook"]};
 
 const GROUP_OF = {};
 {
