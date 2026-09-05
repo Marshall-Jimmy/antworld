@@ -26,6 +26,14 @@
       pointer-events: none; white-space: pre; user-select: none;
       backdrop-filter: blur(2px);
     }
+    /* P2.4b 分层 HUD: 三层各一个 div, 颜色按「多久看一次一次它」分档, 不是按实现者喜好。
+       l0 = 每秒都在变的实时量(最亮) / l1 = 环境与曲线(次亮) / l2 = 操作提示与 seed(最暗, 默认藏)。
+       旧版 8 行同色同号, 结果是没有一行能被眼睛挑出来——那不是信息密度, 是噪声密度。 */
+    #hud .hud-l0 { color: #d7e7f5; }
+    #hud .hud-l0 div:first-child { color: #ffffff; }
+    #hud .hud-l1 { color: #92abc0; margin-top: 3px; border-top: 1px solid #16233a; padding-top: 3px; }
+    #hud .hud-l2 { color: #6b8098; margin-top: 3px; border-top: 1px solid #16233a; padding-top: 3px; }
+    #hud div { white-space: nowrap; }
     #toast {
       position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
       font: 12px ui-monospace, Consolas, monospace; color: #cfe3f5;

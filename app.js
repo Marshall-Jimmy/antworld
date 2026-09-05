@@ -2,7 +2,7 @@
 
 import { SCHEMA, values, get, set, toQuery, applyQuery, seedFromQuery } from './core/config.js';
 import { rng, hashSeed, randomSeed } from './core/rng.js';
-import { Loop } from './core/loop.js';
+import { Loop, paceText } from './core/loop.js';
 import { Field } from './sim/fields.js';
 import { World } from './sim/world.js';
 import { Colony } from './sim/colony.js';
@@ -15,6 +15,14 @@ import { updateExposure, effPeak, exposure, resetExposure } from './render/expos
 import { displayField, perception, resetPerception } from './render/perception.js';
 import { Panel } from './ui/panel.js';
 import { Inspector } from './ui/inspector.js';
+// P2.4b 交互层四件套: 滑窗统计 / 场景预设 / 个体事件观察 / 曲线面板 + 录像。
+// 共同点: **全部只读 sim**(见 stats_check S3「开着量具跑 ≡ 一次都不读」的逐位证明)。
+import { ColonyStats, spark } from './core/stats.js';
+import { PRESETS, presetById, applyPresetParams, buildPresetWorld } from './core/presets.js';
+import { AntObserver, EVENT_KINDS, eventKind } from './core/observe.js';
+import { Graph } from './ui/graph.js';
+import { Hud } from './ui/hud.js';
+import { Recorder, recorderSupported, sizeText } from './ui/recorder.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -25,6 +33,12 @@ let world, field, alarmField, colony, hash, stats;
 // sim/场 收到的算式与旧版逐位一致; 打开时也只改时长与衰减指数, 不碰蚂蚁随机流。
 let weather = null, envNow = null;
 const actHist = new Array(40).fill(1);   // HUD 活动度曲线(滚动缓冲, 每 10 步采一点)
+// ---- P2.4b 交互层状态 ----
+const statsWin = new ColonyStats({ stepHz: 60, periodSec: 1, cap: 60 });  // 最近 60 秒
+const story = new AntObserver({ trailCap: 300, eventCap: 60, crumbEvery: 8 });
+let presetId = null;        // null = 出厂默认布局(reset() 原样, 一个字节都不改)
+let followIdx = -1;         // 跟随镜头指向的蚁号(-1 = 不跟随)
+let simSec = 0;             // 仿真内时钟(秒): 曲线与事件时间轴都以它为准, 不用墙钟——倍速下两者差 64 倍
 
 function buildWorldParams() {
   const w = get('worldW'), h = get('worldH'), cell = get('gridCell');
@@ -54,6 +68,19 @@ function reset() {
   weather = new Weather(seed);
   envNow = null;
   actHist.fill(1);
+  // ---- P2.4b: 换一窝就把交互层的三块历史一起清掉 ----
+  // 不清的后果不是崩, 是**假读数**: 曲线会把上一窝的卸货率接在这一窝的开头,
+  // 跟拍的面包屑会指着上一窝那只蚁走过的路(同一只蚁的编号在两窝里是完全不同的两只)。
+  simSec = 0;
+  statsWin.reset();
+  story.nestRadius = nestR;
+  story.select(followIdx >= colony.count ? -1 : followIdx, colony);
+  if (followIdx >= 0) toast(`跟拍对象已随新 colony 重置`);
+  // 预设布局在 reset 之后重放: reset() 会按出厂布局摆那块默认食源, 预设要把它换成自己的场景。
+  if (presetId && presetId !== 'default') {
+    const rep = buildPresetWorld(presetId, world);
+    console.info(`预设 ${presetId} 重建: 墙 ${rep.wallCount} 格 · 食源 ${rep.foods} 块 · 剂量 ${rep.dose}`);
+  }
 }
 
 // 报警信息素活动门控(P2.2): 有捕食者、或最近 100s 内有捕杀喷溅才推进 alarm 场。
@@ -66,6 +93,7 @@ function alarmActive() {
 }
 
 function step(dt) {
+  simSec += dt;               // 仿真内时钟: 曲线/事件时间轴用它, 不用墙钟(倍速下两者差 64 倍)
   // 环境层推进(每逻辑步一次)。关闭时不构造对象, 也不掷任何随机数。
   envNow = weatherActive(values) ? weather.step(dt, values) : null;
   if (envNow && colony.stepCount % 10 === 0) {
@@ -92,6 +120,9 @@ function step(dt) {
   if (colony.firstFoodAnt >= 0) {
     stats.loadedMax = Math.max(stats.loadedMax, colony.loadedCount());
   }
+  // ---- P2.4b 量具: 每逻辑步读一次(stats/observe 都是只读, 见 stats_check S3 的逐位证明) ----
+  statsWin.sample(colony, world);
+  if (followIdx >= 0) story.observe(colony, world, colony.stepCount, simSec);
 }
 
 // ---------- 渲染装配 ----------
@@ -126,6 +157,12 @@ function showToast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (toast.style.opacity = 0), 1800);
 }
+// P2.4b: HUD 换成分层组件(三层 + 每层只在自己变了的时候写 DOM)。
+// 原来这里是每帧把 8 行拼成一个大字符串赋给 textContent——倍速时那是白送的一次整块重排。
+const hud = new Hud(HUD);
+const graph = new Graph(document.body, statsWin);
+// 录像: 主画布 + 检视覆盖层合成成一路 webm(不录覆盖层的话, 跟拍视频里看不见面包屑)
+const recorder = new Recorder(() => [canvas, inspector.cv]);
 
 // ---------- 相机 ----------
 const camera = { cx: get('worldW') / 2, cy: get('worldH') / 2, zoom: 0.5 };
@@ -152,6 +189,38 @@ function screenToWorld(sx, sy) {
           (sy - canvas.clientHeight / 2) / camera.zoom + camera.cy];
 }
 
+// ---------- 跟随镜头(P2.4b) ----------
+// 相机是纯渲染层状态: 挪它不影响任何 sim 算术(perf_check 逐位不变已经证明)。
+const FOLLOW_ZOOM = () => Math.min(60, Math.max(camera.zoom * 3.2, 1.4));
+let followZoom = 0;
+function setFollow(idx) {
+  const n = idx === -1 ? -1 : (idx >= 0 && idx < colony.count ? idx : -1);
+  followIdx = n;
+  story.nestRadius = get('nestRadius');
+  story.select(n, colony);            // 换对象即清历史(两只蚁的故事不许缝成一只)
+  inspector.select(n);                // 检视与跟拍同一个对象: 面板读瞬时量, 时间线读故事
+  if (n >= 0) {
+    followZoom = FOLLOW_ZOOM();
+    inspector.infoRight();
+  }
+  return n;
+}
+// 环面寻址是这里的关键细节: 世界是环面, 蚂蚁从 x=1990 迈一步到 x=2 是**正常走 straight**,
+// 但按普通坐标差算相机要往回追 1988 个单位。所以位移一律取半宽内的最短差, 相机也按最短差插值。
+function updateFollow(dt) {
+  if (followIdx < 0 || followIdx >= colony.count) return;
+  const W = get('worldW'), H = get('worldH');
+  let dx = colony.px[followIdx] - camera.cx, dy = colony.py[followIdx] - camera.cy;
+  if (dx > W / 2) dx -= W; else if (dx < -W / 2) dx += W;
+  if (dy > H / 2) dy -= H; else if (dy < -H / 2) dy += H;
+  const k = Math.min(1, dt * 6);          // 一阶跟随: 6/s 时间常数, 镜头「追」而不是「粘」
+  camera.cx = (camera.cx + dx * k + W) % W;
+  camera.cy = (camera.cy + dy * k + H) % H;
+  if (followZoom > 0 && Math.abs(camera.zoom - followZoom) > 1e-3) {
+    camera.zoom += (followZoom - camera.zoom) * Math.min(1, dt * 4);
+  }
+}
+
 // ---------- URL 还原(先于 panel,让绑定反映 URL) ----------
 applyQuery(new URLSearchParams(location.search));
 
@@ -174,7 +243,32 @@ function pushUrl() { history.replaceState(null, '', buildHref()); }
 // ---------- inspector & panel ----------
 const inspector = new Inspector(document.body, {
   colony, getTransform: worldToScreen, trailLen: 200,
+  observer: story,
 });
+
+// ---------- 预设加载(P2.4b) ----------
+// 顺序是这里的全部内容: 先撤上一个预设的参数增量并落下新的 → 记下当前预设 →
+// reset()(它会按出厂方式重建 world/colony, 并在末尾重放当前预设的布局) → 同步面板与 URL。
+// 为什么必须走 reset(): 换场景等于换一窝的命案现场, 留着上一场景铺好的走廊讲不出新故事。
+function loadPreset(id, opts = {}) {
+  const p = presetById(id);
+  if (!p) { showToast(`没有这个预设: ${id}`); return false; }
+  applyPresetParams(id);
+  presetId = id;
+  reset();
+  refit();
+  panel.syncValues();          // 参数增量要显示回滑杆, 否则面板写着 30 而仿真正在用 120
+  panel.setPreset(id);
+  pushUrl();
+  if (!opts.quiet) {
+    // 只**读**当下世界的布局做报告。这里绝不能再调一次 buildPresetWorld:
+    // reset() 末尾已经重放过了, 再放一遍等于把同一堵墙重画一次, 报告还会把「重放」说成「新增」。
+    let dose = 0;
+    for (const f of world.foodPatches) if (f.amount > 0) dose += f.amount;
+    showToast(`预设「${p.name}」已加载 · 墙 ${world.wallCount} 格 / 食源 ${world.foodPatches.length} 块 / 剂量 ${dose}\n${p.desc}`);
+  }
+  return true;
+}
 
 const panel = new Panel({
   onChange() {
@@ -202,6 +296,13 @@ const panel = new Panel({
       () => showToast('复制失败')
     );
   },
+  onPreset(id) { loadPreset(id); },
+  onFollow() { toggleFollow(); },
+  onGraph() { toggleGraph(); },
+  onRecord() { toggleRecord(); },
+  // 与 H 键同语义: 不带参数进来就是「切下一档」(0→1→2→0)。若沿用 setLevel(undefined),
+    // 面板按钮会把 HUD 打回「精简」而不是循环, 鼠标与键盘就不等价了。
+    onHud() { showToast(`界面详略: ${hud.setLevel((hud.level + 1) % 3)}`); },
 });
 
 // ---------- 初始化世界(inspector 已声明,reset 才能挂 colony) ----------
@@ -213,6 +314,12 @@ const QRY = new URLSearchParams(location.search);
 // 注意必须先判参数存在: Number(null) 等于 0, 直接 Number() 会把「没带参数」当成「检视 0 号蚁」。
 const INSPECT0 = QRY.get('inspect') === null ? -1 : Number(QRY.get('inspect'));
 if (Number.isInteger(INSPECT0) && INSPECT0 >= 0 && INSPECT0 < colony.count) inspector.select(INSPECT0);
+// ?preset=maze 让验收图/分享链接直接落在某个场景上; ?follow=N 直接跟拍第 N 只蚁。
+// 两者都只在 URL 明确带着时才生效——不带就等于出厂路径, 一个字节都不变(红线 2)。
+const PRESET0 = QRY.get('preset');
+if (PRESET0) loadPreset(PRESET0);
+const FOLLOW0 = QRY.get('follow') === null ? -1 : Number(QRY.get('follow'));
+if (Number.isInteger(FOLLOW0) && FOLLOW0 >= 0 && FOLLOW0 < colony.count) setFollow(FOLLOW0);
 pushUrl();
 
 // ---------- 输入 ----------
@@ -266,9 +373,9 @@ window.addEventListener('mouseup', (e) => {
   if (moved) return;
   const [wx, wy] = screenToWorld(e.clientX, e.clientY);
   if (e.button === 2 || e.ctrlKey) {
-    // 右键：移除/吃光食物
+    // 右键：移除/吃光食物, 顺带停掉跟拍(右键本来就是「取消选中」)
     if (world.removeFoodAt(wx, wy)) showToast('已移除食物');
-    inspector.select(-1);
+    setFollow(-1);
     return;
   }
   if (tool === 'predator') {
@@ -283,13 +390,16 @@ window.addEventListener('mouseup', (e) => {
   const nearR = Math.max(14 / camera.zoom, get('gridCell') * 2);
   const idx = hash.nearest(wx, wy, nearR);
   if (idx >= 0) {
-    inspector.select(idx);
+    // P2.4b: 点中一只蚁 = 检视它 + 跟拍它 + 开始收它的事件。
+    // 旧版只 select(): 想看清一只蚁怎么做决定, 得一边手动拖镜头一边凭记忆追——那正是跟拍镜头要解决的。
+    setFollow(idx);
+    showToast(`跟拍蚂蚁 #${idx}(G 或右键取消)`);
     setTimeout(() => inspector.record(), 0);
   } else {
     const dist = Math.hypot(wx - world.nestX, wy - world.nestY);
     if (dist > get('nestRadius') * 1.5) {
       world.addFood(wx, wy, 26, 120);
-      inspector.select(-1);
+      setFollow(-1);
     } else {
       showToast('太靠近巢了，往远点放');
     }
@@ -306,6 +416,9 @@ canvas.addEventListener('wheel', (e) => {
   // 保持鼠标下的世界点不动
   const [sx, sy] = screenToWorld(e.clientX, e.clientY);
   camera.cx += mx - sx; camera.cy += my - sy;
+  // 跟拍时手动缩放: 把自动推近的目标改成用户要的那一档。
+  // 不改这一行, 下一次 updateFollow 会把镜头又拉回 FOLLOW_ZOOM——用户滚轮白滚(和"镜头粘住"一样难受)。
+  if (followIdx >= 0) followZoom = nz;
 }, { passive: false });
 
 // 键盘：1/2/3/4 = 1/8·1·4·64 倍速, 0 = 暂停/继续, F/W/E/P = 切工具, X = 清墙
@@ -323,6 +436,40 @@ function doJumpClock() {
   showToast('时钟推到对面: 昼行↔夜行互换');
 }
 
+// ---------- P2.4b 开关: 跟拍 / 曲线面板 / 录像 ----------
+function toggleFollow() {
+  if (followIdx >= 0) { setFollow(-1); showToast('已停止跟拍'); return; }
+  const cand = inspector.observed;
+  if (cand >= 0) { setFollow(cand); showToast(`跟拍蚂蚁 #${cand}`); return; }
+  // 没有选中对象时挑「此刻正在负重的那只」: 空手在巢里打转的蚁讲不出故事(前几秒全是停顿),
+  // 而负重蚁马上要回家——一跟就能看见「到家卸货」这个最该被看见的事件。
+  hash.build(colony.px, colony.py, colony.count);
+  let pick = -1;
+  for (let i = 0; i < colony.count && pick < 0; i++) if (colony.load[i] > 0) pick = i;
+  if (pick < 0) { showToast('暂时没有负重蚁可跟, 先点一只蚂蚁'); return; }
+  setFollow(pick);
+  showToast(`跟拍蚂蚁 #${pick}(G 或右键取消)`);
+}
+function toggleGraph() {
+  graph.resize(window.devicePixelRatio || 1);
+  graph.setVisible(!graph.visible);
+  showToast(graph.visible ? '统计曲线: 最近 60 秒 (M 关)' : '统计曲线已隐藏(M 开)');
+}
+async function toggleRecord() {
+  if (recorder.active) {
+    const r = await recorder.stop({ preset: presetId || 'default', seed });
+    // 读数只说编码器真收进的东西: frames=被投喂的帧数, drawn=合成画布被画几次;
+    // 两者不等就是断流。P2.4c 在 iab 实测到旧写法报「175 帧 / 0.0 MB」而落盘只有 110 字节的空壳
+    // (病根与修法见 ui/recorder.js 文件头 ⚠ 段)。
+    if (r.ok) showToast(`录像已保存 ${r.file} · ${r.secs.toFixed(1)}s / 投喂 ${r.frames} 帧(合成 ${r.drawn} 次) / ${sizeText(r.bytes)} · ${r.feedMode} ${r.mime}`);
+    else showToast(`录像没存成: ${r.reason} · 投喂 ${r.frames} 帧/合成 ${r.drawn} 帧 · ${r.feedMode} · ${r.mime || '无编码器'}`);
+    return;
+  }
+  const r = recorder.start();
+  if (r.ok) showToast(`开始录制(再按 V 停止并存成 webm) · 投喂方式 ${r.feedMode} · ${r.mime}`);
+  else showToast(`这个环境录不了: ${r.reason}`);
+}
+
 window.addEventListener('keydown', (e) => {
   const map = { '1': 0.125, '2': 1, '3': 4, '4': 64 };
   if (map[e.key]) { loop.setSpeed(map[e.key]); showToast(`速度 ${map[e.key]}x`); }
@@ -333,10 +480,14 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'p' || e.key === 'P') setTool('predator');
   if (e.key === 'r' || e.key === 'R') doStorm();
   if (e.key === 'n' || e.key === 'N') doJumpClock();
+  if (e.key === 'g' || e.key === 'G') toggleFollow();
+  if (e.key === 'm' || e.key === 'M') toggleGraph();
+  if (e.key === 'v' || e.key === 'V') toggleRecord();
+  if (e.key === 'h' || e.key === 'H') showToast(`界面详略: ${hud.setLevel((hud.level + 1) % 3)}`);
   if (e.key === 'x' || e.key === 'X') {
     const n = world.wallCount;
     world.clearWalls();
-    if (n > 0) showToast('墙已全部清除');
+    if (n > 0) showToast(`墙已全部清除(当前预设的布局也一起没了, 要恢复就重新加载预设)`);
   }
 });
 
@@ -345,14 +496,29 @@ let frameTime = 0;
 let fitted = false;
 const loop = new Loop({
   step: 1 / 60,
+  // ?stepBudgetMs=<毫秒> 只为把 loop.js 文件头那条预算关系变成浏览器里可实扫的东西
+  // (读 HUD 的 步/秒 与 达成 定预算档)。不带参数 = undefined = 走 Loop 出厂默认 12 ms, 一字不变;
+  // 它不是 SCHEMA 参数, 由 PASSTHROUGH 原样带回分享链接。
+  stepBudgetMs: (() => {
+    const raw = QRY.get('stepBudgetMs');
+    const v = Number(raw);
+    return raw !== null && Number.isFinite(v) && v > 0 ? v : undefined;
+  })(),
   onStep: step,
   onFrame: (dt) => {
     if (!fitted && canvas.clientWidth > 0) { refit(); fitted = true; }
     resize();
+    updateFollow(dt);
     renderFrame();
-    composeHUD();
+    graph.draw();
+    composeHUD(dt);
+    // 录像合成放在最后: 它要把这一帧刚画完的主画布与覆盖层一起读走(见 ui/recorder.js 文件头)
+    recorder.frame();
   },
 });
+// 录像时不许跳帧: 合成层靠【这一帧刚画完的 drawing buffer】取图, 被跳过的帧在视频里就是断流。
+// 非录像时才按 loop 的分档节流(倍速越高, 越该把毫秒买给仿真而不是买给画面)。
+loop.forceRender = () => recorder.active;
 function renderFrame() {
   // 自适应曝光(P2.3.2): 每帧读一次蚁脚剂量,只读不写,不消耗随机流。
   // autoPeak=0 时 updateExposure 立刻返回、effPeak 退回滑杆 ⇒ 画面逐位不变。
@@ -383,12 +549,48 @@ function renderFrame() {
   inspector.draw();
   frameTime = loop.fps;
 }
-function composeHUD() {
-  const speed = loop.timeScale === 0 ? '暂停' : loop.timeScale + 'x';
-  const loaded = colony.loadedCount();
-  const mode = get('sensorMode') === 'physarum' ? 'physarum(三触角)' : 'diff(双触角)';
-  // 环境读数: 钟点按 dayLength 折算(phase 0=正午), 活性=出巢率乘子 emig, 曲线为其 40 点历史
-  let wxLine = '';
+// ---- P2.4b HUD 读数装配(旧版是每帧拼一大块 textContent, 现在交给 ui/hud.js 分层写) ----
+// ctx 每帧现填, 但**只填一次**: hud 内部按节流 + 每层指纹决定是否真的写 DOM。
+function hudCtx() {
+  const ts = loop.timeScale;
+  const p = presetById(presetId || 'default');
+  const c = {
+    fps: loop.fps,
+    // 倍速是否名副其实只看这一行(P2.4c)。式子在 core/loop.js:paceText 里 —— 搬去那儿的原因是
+    // 它在这里出过量纲错误: 初稿写成 步/秒 × 60, 于是 160 步/秒被印成 9600×(实际 2.7×)。
+    // 抽成纯函数才能被 pace_check.mjs 直接对数字(浏览器里肉眼看不出这类错)。
+    pace: paceText(loop),
+    backend: RENDER_BACKEND,
+    speed: ts === 0 ? '暂停' : ts + '×',
+    speedLevel: ts === 0 ? '暂停' : ts + '×',
+    pop: colony.count,
+    loaded: colony.loadedCount(),
+    delNow: statsWin.label('del'),
+    firstFood: stats.firstFood === null ? '—' : stats.firstFood.toFixed(1) + 's',
+    effPeak: values.autoPeak > 0.5
+      ? `${effPeak().toFixed(2)}(自动 · 蚁脚中位 ${exposure.ref.toFixed(1)})`
+      : `${effPeak().toFixed(2)}(手动滑杆)`,
+    sensorMode: get('sensorMode') === 'physarum' ? 'physarum(三触角)' : 'diff(双触角)',
+    tool: TOOL_LABEL[tool],
+    walls: world.wallCount,
+    predator: world.predator ? '就位' : '无',
+    delTot: colony.deliveries, tot: colony.timeouts, abTot: colony.aborts, killTot: colony.kills,
+    seed,
+    preset: presetId || 'default',
+    presetName: p ? p.name : '默认走廊',
+    paramCount: SCHEMA.filter((s) => values[s.key] !== s.default).length,
+    act: envNow ? envNow.emig : 1,
+    actSpan: Math.round(actHist.length / 6),
+    sparkDel: spark(statsWin.rings.del, 20),
+    sparkLoad: spark(statsWin.rings.load, 20),
+    sparkAb: spark(statsWin.rings.ab, 20),
+    sparkFood: spark(statsWin.rings.food, 20),
+    envLine: '',
+    followLine: followIdx >= 0
+      ? `跟拍 #${followIdx} · 已收 ${story.events.length} 条事件 · ${world.wallCount ? '本预设含墙' : ''}`
+      : '',
+  };
+  // 环境读数(P2.3): 钟点按 dayLength 折算(phase 0=正午), 活性=出巢率乘子 emig, 曲线为其 40 点历史
   if (envNow) {
     const hour = (((envNow.phase + 0.5) % 1) * 24 + 24) % 24;
     const hh = String(Math.floor(hour)).padStart(2, '0');
@@ -397,30 +599,27 @@ function composeHUD() {
       : envNow.pre > 0.02 ? `低压${Math.round(envNow.pressure)}`
       : envNow.wind > 0.15 ? `风${Math.round(envNow.wind * 100)}%`
       : '晴';
-    let spark = '';
-    for (let i = 0; i < actHist.length; i++) {
-      const v = Math.min(1, Math.max(0, actHist[i] / 3));
-      spark += '▁▂▄▆█'[v < 0.25 ? 0 : v < 0.45 ? 1 : v < 0.65 ? 2 : v < 0.85 ? 3 : 4];
-    }
-    wxLine = `时刻 ${hh}:${mm} · ${envNow.temp.toFixed(1)}°C · 活性 ${envNow.emig.toFixed(2)}× · ${sky}\n` +
-             `${spark}  (R=来一场雨 N=推时钟)\n`;
+    c.envLine = `昼夜天气 ${hh}:${mm} · ${envNow.temp.toFixed(1)}°C · ${sky}`;
+    c.actSpark = sparkValues(actHist, 20, 3);
   }
-  HUD.textContent =
-    `Antworld · fps ${loop.fps.toFixed(0)} · 渲染 ${RENDER_BACKEND}\n` +
-    wxLine +
-    `蚂蚁 ${colony.count} · 负重 ${loaded} · 空手返巢 ${colony.aborts} · 感知 ${mode}` +
-    (colony.kills > 0 ? ` · 被捕杀 ${colony.kills}` : '') + `\n` +
-    `首次发现食物 ${stats.firstFood === null ? '—' : stats.firstFood.toFixed(1) + 's'} · ` +
-    (values.autoPeak > 0.5
-      ? `曝光 ${effPeak().toFixed(2)}（自动 · 蚁脚中位 ${exposure.ref.toFixed(1)}）\n`
-      : `曝光 ${effPeak().toFixed(2)}（手动 · 滑杆）\n`) +
-    `速度 ${speed}  (1/2/3/4   0=暂停)\n` +
-    `工具 ${TOOL_LABEL[tool]}(F/W/E/P) · 墙 ${world.wallCount} 格(X清墙)` +
-    (world.predator ? ` · 捕食者就位` : '') + `\n` +
-    `左键:检视/放食物/画墙/捕食者  右键:移除食物·拖动平移  滚轮:缩放\n` +
-    `seed ${seed.slice(0, 10)}`;
+  return c;
 }
 
+// 老的活动度数组(不是 Ring)也走同一套 sparkline 语法, 免得 HUD 里出现两种刻度规则。
+function sparkValues(arr, width, refMax) {
+  const n = arr.length;
+  const start = n > width ? n - width : 0;
+  let s = '';
+  for (let i = start; i < n; i++) {
+    const v = refMax > 0 ? arr[i] / refMax : 0;
+    s += '▁▂▄▆█'[v <= 0 ? 0 : v < 0.25 ? 1 : v < 0.5 ? 2 : v < 0.75 ? 3 : 4];
+  }
+  return s;
+}
+
+function composeHUD(dt) {
+  hud.update(hudCtx(), dt);
+}
 // 启动
 window.addEventListener('resize', resize);
 resize();

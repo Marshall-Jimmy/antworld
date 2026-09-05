@@ -11,6 +11,7 @@ import { Colony } from './sim/colony.js';
 import { Weather, weatherActive } from './core/weather.js';
 import { updateExposure, effPeak, exposure } from './render/exposure.js';
 import { displayField } from './render/perception.js';
+import { applyPresetParams, buildPresetWorld } from './core/presets.js';
 
 // ---- 跑 SIM(默认 40s; RENDER_SECS 可覆盖) ----
 const seed = 'render';
@@ -51,6 +52,15 @@ if (process.env.WALL === 'bar') {
     if (y > h * 0.08 && y < h * 0.30) continue;   // 缺口
     world.paintWall(wx, y, 14, true);
   }
+}
+// PRESET=<id> → 用 P2.4b 的场景预设出图。放在 Colony 构造之前: 预设改的是参数(forage/carryTimeout)
+// 与布局, 而 Colony 构造要按 nestRadius 摆一窝蚁——顺序反了就会出现「图是迷宫的、蚁是按出厂参数出生的」。
+// 也正因为 buildPresetWorld 不碰 r, 这块与上面 WALL=bar / PRED 两个旧开关互不干扰。
+const PRESET = process.env.PRESET;
+if (PRESET && PRESET !== 'default') {
+  applyPresetParams(PRESET);
+  const rep = buildPresetWorld(PRESET, world);
+  console.log(`预设 ${PRESET}: 墙 ${rep.wallCount} 格 · 食源 ${rep.foods} 块 · 总剂量 ${rep.dose}`);
 }
 const colony = new Colony(values.antCount, { rng: r, world, nestRadius: values.nestRadius });
 const dt = 1 / 60;

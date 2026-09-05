@@ -3,11 +3,13 @@
 
 import { get } from '../core/config.js';
 import { MEM_WPTS } from '../sim/colony.js';
+import { EVENT_KINDS, eventKind } from '../core/observe.js';
 
 export class Inspector {
   constructor(host, opts) {
     this.getTransform = opts.getTransform; // worldToScreen(x,y) -> [px,py]
     this.colony = opts.colony;
+    this.observer = opts.observer || null;   // P2.4b: 个体事件观察器(跟拍才有的面包屑 + 时间线)
     this.trailLen = opts.trailLen || 200;
     this.trailX = new Float32Array(this.trailLen);
     this.trailY = new Float32Array(this.trailLen);
@@ -31,9 +33,14 @@ export class Inspector {
   }
 
   resize(w, h) {
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.cv.width = Math.max(1, Math.round(w * this.dpr));
-    this.cv.height = Math.max(1, Math.round(h * this.dpr));
+    // ⚠ P2.4c: app.js 是【每帧】调 resize() 的(它必须接住窗口变化), 而给 canvas.width 赋值
+    // 哪怕赋同一个数, 浏览器也会重分配 backing store 并清空内容 —— 全屏 1600×900@2 就是每帧
+    // 白扔掉 ~11MB 再抹零。所以这里先比尺寸, 没变就一个字节都不动(render/webgl2.js 早就是这么写的)。
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const bw = Math.max(1, Math.round(w * dpr)), bh = Math.max(1, Math.round(h * dpr));
+    if (this.cv.width === bw && this.cv.height === bh && this.dpr === dpr) return;
+    this.dpr = dpr;
+    this.cv.width = bw; this.cv.height = bh;
   }
 
   select(idx) {
@@ -41,9 +48,13 @@ export class Inspector {
     this.trailN = 0; this.head = 0;
     if (idx < 0) { this.info.style.display = 'none'; return; }
     this.info.style.display = 'block';
-    // 让开右侧参数面板: 两者都是 fixed 右上角, 不让开就被面板压住, 整块读数白看
-    // (P2.4 给信息面板加了"记忆"一行, 这个老毛病才暴露)。面板比 inspector 晚创建,
-    // 所以每次显示时量一次实际宽度, 不写死常数。
+    this.infoRight();
+  }
+
+  // 让开右侧参数面板: 两者都是 fixed 右上角, 不让开就被面板压住, 整块读数白看
+  // (P2.4 给信息面板加了"记忆"一行, 这个老毛病才暴露)。面板比 inspector 晚创建,
+  // 所以每次显示时量一次实际宽度, 不写死常数。
+  infoRight() {
     const paneEl = document.querySelector('.tp-dfwv');
     this.info.style.right = ((paneEl && paneEl.offsetWidth) || 260) + 18 + 'px';
   }
@@ -68,6 +79,32 @@ export class Inspector {
     if (i < 0) return;
 
     const T = this.getTransform;
+    // ---- P2.4b 面包屑 + 事件标记(比逐帧轨迹更长的一档: 300 粒 ≈ 32 秒) ----
+    // 画在最底下:事件标记会被后面的轨迹线与身体压住一点, 但「先看见发生过什么、再看见怎么走到的」
+    // 才是这里要的读法。
+    const ob = this.observer;
+    if (ob && ob.idx === i && ob.tn >= 2) {
+      const tr = ob.trail();
+      const m = tr.length / 2;
+      g.strokeStyle = 'rgba(150,200,255,0.30)';
+      g.lineWidth = 2.2;
+      g.beginPath();
+      for (let k = 0; k < m; k++) {
+        const p = T(tr[k * 2], tr[k * 2 + 1]);
+        if (k === 0) g.moveTo(p[0], p[1]); else g.lineTo(p[0], p[1]);
+      }
+      g.stroke();
+      for (const ev of ob.events) {
+        const kind = eventKind(ev.code);
+        if (!kind) continue;
+        const p = T(ev.x, ev.y);
+        g.fillStyle = kind.color;
+        g.globalAlpha = 0.9;
+        g.beginPath(); g.arc(p[0], p[1], 3.6, 0, 7); g.fill();
+        g.globalAlpha = 1;
+      }
+    }
+
     const n = this.trailN;
     if (n >= 2) {
       // 从最老到最新
@@ -132,12 +169,29 @@ export class Inspector {
           this.colony.memFail[i].toFixed(0) + '/' + get('memForget').toFixed(0)
         : '记忆   尚无(空手出门后才开始记)';
     }
-    this.info.textContent =
+    let txt =
       `蚂蚁 #${i}\n` +
       `负载   ${load.toFixed(2)}\n` +
       `朝向   ${(((th * 180 / Math.PI + 540) % 360) - 180).toFixed(0)}°\n` +
       `|h|    ${homeDist.toFixed(1)}  (回家向量长度)\n` +
       `负重   ${this.colony.carryT[i].toFixed(2)}s / ${get('carryTimeout').toFixed(0)}s\n` + memLine;
+    // ---- P2.4b 个体故事: 这只蚁「讲得出完整故事」的那一半(另一半是面包屑 + 事件标记) ----
+    // 时间是**仿真内**秒数, 不是墙钟: 64 倍速下墙钟过 1 分钟、仿真过 64 分钟,
+    // 用墙钟标出来的时间线会和曲线/录像里的读数互相对不上。
+    if (ob && ob.idx === i) {
+      const t2s = (t) => {
+        const s = Math.max(0, t | 0);
+        return String((s / 60) | 0).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+      };
+      const sum = EVENT_KINDS.filter((k) => ob.summary[k.code]).map((k) => k.label + ' ' + ob.summary[k.code]);
+      txt += '\n──── 跟拍 ' + (sum.length ? sum.join(' · ') : '尚无事件');
+      const evs = ob.events.slice(-7);
+      for (const e of evs) {
+        const kind = eventKind(e.code);
+        txt += '\n ' + t2s(e.tSec) + ' ' + (kind ? kind.mark + ' ' + kind.label : e.code);
+      }
+    }
+    this.info.textContent = txt;
   }
 
   clearSelect() { this.select(-1); }
