@@ -10,6 +10,7 @@ import { World } from './sim/world.js';
 import { Colony } from './sim/colony.js';
 import { Weather, weatherActive } from './core/weather.js';
 import { updateExposure, effPeak, exposure } from './render/exposure.js';
+import { displayField } from './render/perception.js';
 
 // ---- 跑 SIM(默认 40s; RENDER_SECS 可覆盖) ----
 const seed = 'render';
@@ -79,7 +80,9 @@ for (let t = 0; t < SIM_T * 60; t++) {
 }
 // 自适应曝光(P2.3.2): 截图前按「蚁脚剂量中位数」定一次参考浓度。
 // 与 app 的区别:headless 没有逐帧滤波的过程可复现,直接落位即等价于跑满时间常数。
-updateExposure(field, colony, SIM_T);
+// P2.3.4: 与 app 同源——截图画的和截图定曝光用的是**同一个**对象(lateralK=0 时即 field 本身)
+const disp = displayField(field);
+updateExposure(disp, colony, SIM_T);
 
 // ---- 渲染 ----
 const SCALE = 0.4;   // 世界→图像像素
@@ -124,7 +127,7 @@ const flut = softTone ? rampLut(FIELD_STOPS) : null;
 const alut = softTone ? rampLut(ALARM_STOPS) : null;
 for (let gy = 0; gy < field.gh; gy++) {
   for (let gx = 0; gx < field.gw; gx++) {
-    const v = field.buf[gy * field.gw + gx];
+    const v = disp.buf[gy * field.gw + gx];   // P2.3.4: 显示量(可能已减背景)
     let cr, cg, cb;
     if (softTone) {
       // 软压缩有界色阶: 与 WebGL/Canvas2D 共用 palette.js。PNG 路径的 px() 是"覆盖"而非叠加,

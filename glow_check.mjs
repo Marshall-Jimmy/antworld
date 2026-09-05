@@ -23,6 +23,14 @@
 // G4 roadL≥0.28 是坏判据：它把「走廊显眼」写成了「走廊绝对亮度高」，而今日方案达标恰恰是因为
 // 走廊被画到接近色阶顶端(用户抱怨的那坨白斑)。自适方案在 G4 上 FAIL 属于**判据选错**，不是机制失败。
 // 真正要的东西在 G1/G2/G3(雾的可见半径与亮度)和 G5(结构可读性)上。详见 METRICS P2.3.2。
+//
+// ── P2.3.4 追加一行「出厂+侧抑制」与 G6 的再交底(判据同样一字未改) ──
+// 「出厂+侧抑制」= 真上线的那条接线：画面与曝光锚点共用 displayField()，peak 取该锚点下的 effPeak()。
+//   它与「自适应模块」一行的差就是侧抑制单独一项的贡献；对照仍是「今日0.35」。
+// G6 写的是「自适应不能把正常玩家的主画面做暗」——那是对**曝光**模块的约束(它只准收光不许加光)。
+//   侧抑制的任务恰恰相反：把主画面那层**空间共模**拿掉，常规玩法均亮必然下降。
+//   ⇒ 出厂行在 G6 上红 = 设计意图的另一面，不是回归；保留 FAIL、靠出图肉眼裁决(见 METRICS P2.3.4 §7)。
+//   这一行的反作弊护栏由 G5(路格级数)与 roadL(走廊亮度)承担：走廊本体不许被抑制吃掉。
 import { values } from "./core/config.js";
 import { rng, hashSeed } from "./core/rng.js";
 import { Field } from "./sim/fields.js";
@@ -31,6 +39,7 @@ import { Colony } from "./sim/colony.js";
 import { Weather, weatherActive } from "./core/weather.js";
 import { tone, rampColor, FIELD_STOPS } from "./render/palette.js";
 import { updateExposure, effPeak, resetExposure } from "./render/exposure.js";
+import { displayField, perception } from "./render/perception.js";   // P2.3.4 出厂行真走这条接线
 
 const DT = 1 / 60, DEF = { ...values };
 const LUM = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
@@ -145,17 +154,24 @@ for (const scen of SCEN) for (const seed of SEEDS) {
     // 「自适应模块」= 直接调用 app 接线的那份 exposure.js，不是手工 ref×GAIN 的模拟。
     // 判据因此是对真正会上线的代码做的；effPeak 里的 max(滑杆, ref×GAIN) 让常规玩法自动退回今日值。
     resetExposure(); updateExposure(field, colony, SCENARIOS[scen].secs);
+    const peakAdapt = effPeak();
+    // P2.3.4：真接线的出厂态——先算显示量，再把曝光锚在**同一份**显示量上(app.js 就是这么写的)。
+    // perceivedField 复用同一块输出缓冲 ⇒ 这一行只算一次，peak 与取像对象当场快照。
+    const disp = displayField(field);            // lateralK = DEF(出厂)；=0 时它就是 field 本身
+    resetExposure(); updateExposure(disp, colony, SCENARIOS[scen].secs);
+    const peakFact = effPeak();
     // 自适×k 是"GAIN 若取别的值"的假设行，也必须过同一条硬约束：滑杆是下界（只收光不加光）。
     // 不加这个 max 会在常规玩法(蚁脚中位≈0)量出 peak=0.0004 这种**代码永远产生不了的配置**，
     // 于是 v/peak 爆表、整图刷白、G6 读出一个虚假的大亮点。宁可少一行, 不量不存在的状态。
     const floor = values.peak;
-    const schemes = [["今日0.35", 0.35], ["旧0.7", 0.7], ["自适应模块", effPeak()], ["自适×0.5", Math.max(floor, ref * 0.5)],
+    const schemes = [["今日0.35", 0.35], ["旧0.7", 0.7], ["自适应模块", peakAdapt], ["出厂+侧抑制", peakFact, disp], ["自适×0.5", Math.max(floor, ref * 0.5)],
       ["自适×1", Math.max(floor, ref)], ["自适×2", Math.max(floor, ref * 2)], ["自适×4", Math.max(floor, ref * 4)]];
     console.log("[" + scen + " " + seed + " dw=" + dw + "] 触角 " + reach.toFixed(2) + "格 | 蚁脚剂量中位 "
       + ref.toFixed(2) + " (负重蚁 " + refL.toFixed(2) + ") = " + (ref / 0.35).toFixed(1) + "×今日peak");
-    for (const [name, pk] of schemes) {
+    for (const [name, pk, src] of schemes) {
       if (!(pk > 0)) continue;
-      const p = renderProfile(field, d, pk, reach);
+      // 分箱用的距离场来自蚁群足迹(与显示量无关)，所以两侧共用同一份 d 才是同尺子对拍
+      const p = renderProfile(src || field, d, pk, reach);
       rows.push({ scen, seed, dw, name, ref, reach, ...p });
       console.log("   " + name.padEnd(9) + " peak " + pk.toFixed(2).padStart(7)
         + " | 走廊亮度 " + p.roadL.toFixed(3) + " 级数 " + String(p.levels).padStart(3)
@@ -176,7 +192,7 @@ function agg(scen, dw, name, key) {
   const g = rows.filter((r) => r.scen === scen && r.dw === dw && r.name === name);
   return g.length ? g.reduce((a, b) => a + b[key], 0) / g.length : NaN;
 }
-const NAMES = ["今日0.35", "旧0.7", "自适应模块", "自适×0.5", "自适×1", "自适×2", "自适×4"];
+const NAMES = ["今日0.35", "旧0.7", "自适应模块", "出厂+侧抑制", "自适×0.5", "自适×1", "自适×2", "自适×4"];
 console.log("\n=== 判据 G1–G6（三种子均值）===");
 for (const dw of [0.06, 0.02]) {
   for (const name of NAMES) {

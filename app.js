@@ -11,6 +11,8 @@ import { SpatialHash } from './sim/spatialHash.js';
 import { WebGL2Backend } from './render/webgl2.js';
 import { Canvas2DBackend } from './render/canvas2d.js';
 import { updateExposure, effPeak, exposure, resetExposure } from './render/exposure.js';
+// P2.3.4 侧抑制: 屏幕该画什么、曝光该锚在什么上,都由这**一个**函数决定(见其注释)。
+import { displayField, perception, resetPerception } from './render/perception.js';
 import { Panel } from './ui/panel.js';
 import { Inspector } from './ui/inspector.js';
 
@@ -38,7 +40,7 @@ function reset() {
   const { r, w, h } = buildWorldParams();
   const nestR = get('nestRadius');
   colony = new Colony(get('antCount'), { rng: r, world, nestRadius: nestR });
-  resetExposure();   // 换一窝/换种子就把曝光表归零:上一窝的剂量水平对这一窝没有参考价值
+  resetExposure(); resetPerception();   // 换一窝/换种子就把曝光表归零:上一窝的剂量水平对这一窝没有参考价值
   inspector && (inspector.colony = colony);
   // 默认放一块离巢适当距离的食物，方便一进来就看到成道
   const fx = w * (0.55 + r() * 0.2);
@@ -354,10 +356,13 @@ const loop = new Loop({
 function renderFrame() {
   // 自适应曝光(P2.3.2): 每帧读一次蚁脚剂量,只读不写,不消耗随机流。
   // autoPeak=0 时 updateExposure 立刻返回、effPeak 退回滑杆 ⇒ 画面逐位不变。
-  updateExposure(field, colony, colony.stepCount / 60);
+  // P2.3.4: 先算出"这一帧要画的那份场"(lateralK=0 时它就是 field 本身),曝光锚点与后端
+  // 共用同一个对象 ⇒ 锚点和画面量的是同一件事,不可能分叉。
+  const disp = displayField(field);
+  updateExposure(disp, colony, colony.stepCount / 60);
   backend.setCamera(camera.cx, camera.cy, camera.zoom);
   backend.render({
-    field, foodPatches: world.foodPatches,
+    field: disp, foodPatches: world.foodPatches,
     nestX: world.nestX, nestY: world.nestY, nestRadius: get('nestRadius'),
     colony,
     // 障碍墙(P2.1): 有墙才传, 后端按 wallVersion 缓存顶点
