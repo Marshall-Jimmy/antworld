@@ -129,7 +129,16 @@ function check(name, ok, detail) { CHECK.push({ name: name, ok: !!ok, detail: de
 // 记忆改变每一步的走位 → ants 校验和变; 但这个布局的宏观账本逐位不变(field/del/timeouts/aborts
 // 全同), 因为单食源+强场下双通道份额制让记忆几乎不抢方向盘(METRICS ②b/③c 的"不伤害"判据)。
 // 恒等逻辑本身仍成立: (a)===(b) 逐位相同见下。旧值 8296930.9330737181 = PARAMS=K_mem=0 的门控对照。
-const EXPECT = { ants: '8297548.1091679782', field: '285.06957330616132', del: 752, timeouts: 100, aborts: 1552 };
+// P2.3.2 第 7 次重定基: diffuseWeight 出厂 0.06→0.02(推导依据: 云的衰减长度 ℓ=sqrt(D/λ) 必须 ≤ 触角长度,
+//   否则场里存着没有蚂蚁能读的信息, 而且实测会把蚂蚁带偏)。
+// 这是 sim 参数不是渲染参数 → 每步邻居混合量变了, ants/field 校验和必然全变。
+// 旧基线不删除, 降级为 EXPECT_P24 常驻: 恒等跑 (d) 显式钉回 dw=0.06 必须逐位复现它。
+// 没有 (d), 「EXPECT 换新数」就是改考卷凑绿; 有了 (d), 它被证明只动了 dw 这一个自由度。
+// 新基线(2026-09-05 实测, dw=0.02 出厂): 与旧值同布局同种子,只有 dw 这一个自由度不同。
+// 变化方向合理: 场摊得慢了 → 浓核更浓、外围更淡 → 蚂蚁读到的图样更锐,吞吐账本随之改写
+// (del 752→750, timeouts 100→69, aborts 1552→1482: 更少蚁在途中超时/弃货)。
+const EXPECT = { ants: '8288491.3883813173', field: '195.34836906715111', del: 750, timeouts: 69, aborts: 1482 };
+const EXPECT_P24 = { ants: '8297548.1091679782', field: '285.06957330616132', del: 752, timeouts: 100, aborts: 1552 };
 function identityRun(over) {
   useParams(over);
   const STEPS = 3600, WARM = 100, N = 5000;
@@ -156,6 +165,10 @@ function identityTest() {
   const c = identityRun({ dayNight: 1, weather: 0, tempSwing: 0 });
   console.log('(c) 灵敏度对照(昼夜) : ants ' + c.ants + ' | field ' + c.field);
   check('恒等(c) 灵敏度对照: 真机制必须改变校验和', c.ants !== EXPECT.ants, '内源钟一开就该破恒等(否则说明①②是假绿)');
+  // (d) 门控对照: 把改掉的 sim 参数显式钉回 P2.4 的值, 必须逐位复现旧基线。
+  const d = identityRun({ dayNight: 0, weather: 0, diffuseWeight: 0.06 });
+  console.log('(d) 旧 dw=0.06 门控 : ants ' + d.ants + ' | field ' + d.field + ' | del ' + d.del + ' timeouts ' + d.timeouts + ' aborts ' + d.aborts);
+  check('恒等(d) 门控: dw 钉回 0.06 必须逐位复现 P2.4 基线', d.ants === EXPECT_P24.ants && d.field === EXPECT_P24.field && d.del === EXPECT_P24.del && d.timeouts === EXPECT_P24.timeouts && d.aborts === EXPECT_P24.aborts, '对 P2.4 基线 ' + EXPECT_P24.ants);
 }
 
 // ================== ② 风暴时序 A→B→C→D ==================

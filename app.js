@@ -10,6 +10,7 @@ import { Weather, weatherActive } from './core/weather.js';
 import { SpatialHash } from './sim/spatialHash.js';
 import { WebGL2Backend } from './render/webgl2.js';
 import { Canvas2DBackend } from './render/canvas2d.js';
+import { updateExposure, effPeak, exposure, resetExposure } from './render/exposure.js';
 import { Panel } from './ui/panel.js';
 import { Inspector } from './ui/inspector.js';
 
@@ -37,6 +38,7 @@ function reset() {
   const { r, w, h } = buildWorldParams();
   const nestR = get('nestRadius');
   colony = new Colony(get('antCount'), { rng: r, world, nestRadius: nestR });
+  resetExposure();   // 换一窝/换种子就把曝光表归零:上一窝的剂量水平对这一窝没有参考价值
   inspector && (inspector.colony = colony);
   // 默认放一块离巢适当距离的食物，方便一进来就看到成道
   const fx = w * (0.55 + r() * 0.2);
@@ -350,6 +352,9 @@ const loop = new Loop({
   },
 });
 function renderFrame() {
+  // 自适应曝光(P2.3.2): 每帧读一次蚁脚剂量,只读不写,不消耗随机流。
+  // autoPeak=0 时 updateExposure 立刻返回、effPeak 退回滑杆 ⇒ 画面逐位不变。
+  updateExposure(field, colony, colony.stepCount / 60);
   backend.setCamera(camera.cx, camera.cy, camera.zoom);
   backend.render({
     field, foodPatches: world.foodPatches,
@@ -400,7 +405,10 @@ function composeHUD() {
     wxLine +
     `蚂蚁 ${colony.count} · 负重 ${loaded} · 空手返巢 ${colony.aborts} · 感知 ${mode}` +
     (colony.kills > 0 ? ` · 被捕杀 ${colony.kills}` : '') + `\n` +
-    `首次发现食物 ${stats.firstFood === null ? '—' : stats.firstFood.toFixed(1) + 's'}\n` +
+    `首次发现食物 ${stats.firstFood === null ? '—' : stats.firstFood.toFixed(1) + 's'} · ` +
+    (values.autoPeak > 0.5
+      ? `曝光 ${effPeak().toFixed(2)}（自动 · 蚁脚中位 ${exposure.ref.toFixed(1)}）\n`
+      : `曝光 ${effPeak().toFixed(2)}（手动 · 滑杆）\n`) +
     `速度 ${speed}  (1/2/3/4   0=暂停)\n` +
     `工具 ${TOOL_LABEL[tool]}(F/W/E/P) · 墙 ${world.wallCount} 格(X清墙)` +
     (world.predator ? ` · 捕食者就位` : '') + `\n` +

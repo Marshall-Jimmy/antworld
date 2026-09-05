@@ -139,26 +139,37 @@ console.log(`=== P2.4 个体路线记忆验收 (seed=${SEED}, 保真带=${BAND}�
 
 // ---------------- ① 恒等回归 ----------------
 if (SUB.includes('identity')) {
-  console.log('\n--- ① 恒等回归(K_mem=0 必须与 P2.3.1 基线逐位相同) ---');
+  console.log('\n--- ① 恒等回归(两组门控基线: dw 钉回 0.06 复现 P2.3.1 旧码 / 出厂 dw=0.02 复现本轮重录) ---');
   // 本布局(单源管饱/seed=memcheck/3600 步)自己的关-门控常量基线。注意: 它**不是** perf_check 的
   // 285.069…——布局与种子都不同。对 P2.3.1 的逐位恒等由 perf_check 单独证明(见 METRICS)。
-  // 这两个数不是"跑一遍录下来"的自证——是用 `git worktree add _ant_p231 P2.3.1` 把 P2.3.1 的
+  // 旧的那两个数不是"跑一遍录下来"的自证——是用 `git worktree add _ant_p231 P2.3.1` 把 P2.3.1 的
   // 旧码(根本没有记忆机制)单独跑同一布局得到的: ants 8271063.288091577 / field 1791.47545048508
-  // / del 1035 / to 0 / abort 312, 与新码 K_mem=0 逐位相同。另: perf_check 的 P2.3.1 基线也逐位不变。
-  const BASE_A = 8271063.288091577, BASE_F = 1791.47545048508;
-  const A = [], B = [];
-  for (const k of [0, 0, 2]) {
-    const S = makeSim({ K_mem: k }, 'memcheck');
+  // / del 1035 / to 0 / abort 312, 与新码 K_mem=0 逐位相同。
+  //
+  // ── P2.3.2 重定基(第 8 次, 2026-09-05) ──
+  // diffuseWeight 出厂 0.06→0.02 是 **sim 参数**(由 ℓ=sqrt(D/λ)≤触角 解出的推导值), 校验和必然变。
+  // 为了不让"换基线"退化成改考卷凑绿, 这里同时钉两组数, 而且**旧码那一组仍然留在考点上**:
+  //   ①b0 把 dw 显式钉回 0.06, K_mem=0 必须逐位复现 P2.3.1 旧码的数 ⇒ 证明本轮只动了 dw 一个自由度;
+  //   ①b1 出厂(dw=0.02)下 K_mem=0 必须逐位复现本轮重录的数。
+  // REBASE=1 只打印当前出厂配置的全精度校验和供录入, 不参与判定、不改动任何阈值。
+  const BASE_A = 8271063.288091577, BASE_F = 1791.47545048508;   // dw=0.06 门控值(P2.3.1 旧码实测)
+  const NEW_A = 8363664.351490582, NEW_F = 1031.4224609786145;                                    // 出厂 dw=0.02 重录值(由 REBASE=1 打印后填入)
+  const run3600 = (over) => {
+    const S = makeSim(over, "memcheck");
     for (let st = 0; st < 3600; st++) stepOnce(S);
-    (k === 2 ? B : A).push(checksums(S, values.antCount));
-  }
-  console.log(`  关(两次): ants ${A[0].a.toFixed(6)} / ${A[1].a.toFixed(6)}  field ${A[0].f.toFixed(6)} / ${A[1].f.toFixed(6)}`);
-  console.log(`  开:       ants ${B[0].a.toFixed(6)}  field ${B[0].f.toFixed(6)}`);
-  check('①a 同种子跑两次逐位相同(整条链路确定性)', Math.abs(A[0].a - A[1].a) < 1e-9 && Math.abs(A[0].f - A[1].f) < 1e-12, A[0].a.toFixed(6));
-  check('①b K_mem=0 逐位等于 P2.4 之前录下的本布局基线', Math.abs(A[0].a - BASE_A) < 1e-6 && Math.abs(A[0].f - BASE_F) < 1e-9, `ants ${A[0].a.toFixed(6)} (基线 ${BASE_A}) field ${A[0].f.toFixed(8)}`);
-  check('①c K_mem=2 必须破恒等(门控真的接上了)', Math.abs(B[0].a - A[0].a) > 1e-6, `差 ${(B[0].a - A[0].a).toFixed(3)}`);
+    return checksums(S, values.antCount);
+  };
+  const old06 = run3600({ K_mem: 0, diffuseWeight: 0.06 });
+  const off1 = run3600({ K_mem: 0 }), off2 = run3600({ K_mem: 0 }), on = run3600({ K_mem: 2 });
+  if (process.env.REBASE) console.log('  REBASE 全精度: ants ' + String(off1.a) + ' field ' + String(off1.f));
+  console.log('  dw钉0.06(旧码基线): ants ' + old06.a.toFixed(6) + ' field ' + old06.f.toFixed(6));
+  console.log('  出厂关(两次): ants ' + off1.a.toFixed(6) + ' / ' + off2.a.toFixed(6) + '  field ' + off1.f.toFixed(6) + ' / ' + off2.f.toFixed(6));
+  console.log('  出厂开:       ants ' + on.a.toFixed(6) + '  field ' + on.f.toFixed(6));
+  check('①a 同种子跑两次逐位相同(整条链路确定性)', Math.abs(off1.a - off2.a) < 1e-9 && Math.abs(off1.f - off2.f) < 1e-12, off1.a.toFixed(6));
+  check('①b0 门控: dw 显式钉回 0.06 必须逐位复现 P2.3.1 旧码基线 ⇒ 本轮只动了 dw 一个自由度', Math.abs(old06.a - BASE_A) < 1e-6 && Math.abs(old06.f - BASE_F) < 1e-9, 'ants ' + old06.a.toFixed(9) + ' vs ' + BASE_A.toFixed(9) + ' | field ' + old06.f.toFixed(8) + ' vs ' + BASE_F.toFixed(8));
+  check('①b1 出厂 dw=0.02 逐位复现本轮重录基线', Math.abs(off1.a - NEW_A) < 1e-6 && Math.abs(off1.f - NEW_F) < 1e-9, 'ants ' + off1.a.toFixed(6) + ' field ' + off1.f.toFixed(6));
+  check('①c K_mem=2 必须破恒等(门控真的接上了)', Math.abs(on.a - off1.a) > 1e-6, '差 ' + (on.a - off1.a).toFixed(3));
 }
-
 // ---------------- ② 稳定单源: 保真↑ 且吞吐零成本 ----------------
 if (SUB.includes('stable')) {
   console.log('\n--- ② 稳定单食源 240s (成熟段 120s 起量保真) ---');
@@ -303,6 +314,11 @@ if (SUB.includes('night')) {
   const t500 = [0, 1, 2].reduce((s, i) => s + avgv(0, 't50', i), 0) / 3;
   const t502 = [0, 1, 2].reduce((s, i) => s + avgv(2, 't50', i), 0) / 3;
   const eroMin = Math.min(...[0, 1, 2].map((i) => avgv(0, 'ero', i)));
+  // ③a/③b 的布尔判据吃的是**逐种子原始值里的最坏者**, 可明细行原先只印三种子均值 ⇒ 会出现
+  // "明细看着挺好、判据却红了"的自我误导(实测: ③b 均值 17s, 判据真正吃到的值是某个种子的 70s)。
+  // 下面只把判据实际吃到的那个数也打印出来, 阈值一个字都不改。
+  const dawnMax = Math.max(...run3.flatMap((o) => o[0].dawn));
+  const t50Max = Math.max(...run3.flatMap((o) => o[0].t50));
   const K0 = avg(0, 'all'), K2 = avg(2, 'all');
   const tot0 = run3.map((o) => o[0].all);
   const spread0 = (Math.max(...tot0) - Math.min(...tot0)) / (K0 || 1);
@@ -311,9 +327,9 @@ if (SUB.includes('night')) {
   console.log('  [负结果·如实入库] 正常昼夜玩法下记忆**没有可宣称的吞吐红利**: 总账 ' + (K2 / K0).toFixed(3) + '× 晨间 ' + (morn2 / morn0).toFixed(3) + '× —— 机制解释见 ③b: 基线在黎明后 ' + t500.toFixed(0) + 's 就恢复半稳, 集体通道的真空期只有约 ' + (t500 - 10).toFixed(0) + 's, 兑换不出收益; 红利要在集体通道被持续摘走时才出现(⑤B 2.05×)。');
   check('③a 前提1: 夜里集体走廊确实被蒸发(黎明场峰 ≤ 当日平台峰的 1/5) —— 同时推翻上一轮"峰还有 1.2 就是没断"的误判(衰减要按比值判)',
     eroMin >= 5 && Math.max(...run3.flatMap((o) => o[0].dawn)) < 10,
-    '基线夜削 ' + j3(0, 'ero', 0) + '× (最小 ' + eroMin.toFixed(0) + '×) | 晨峰 ' + j3(0, 'dawn', 1) + ' | 记忆组晨峰 ' + j3(2, 'dawn', 1));
+    '基线夜削 ' + j3(0, 'ero', 0) + '× (最小 ' + eroMin.toFixed(0) + '×) | 晨峰·判据取最坏 ' + dawnMax.toFixed(1) + ' (均值 ' + j3(0, 'dawn', 1) + ') | 记忆组均值晨峰 ' + j3(2, 'dawn', 1));
   check('③b 前提2=红利天花板: 基线(纯信息素)在黎明后 ≤60s 就达到当日稳定吞吐的一半 → 正常玩法下记忆**不可能**有显著红利, 本段无权主张收益',
-    Math.max(...run3.flatMap((o) => o[0].t50)) <= 60, '基线达半稳定 ' + j3(0, 't50', 0) + 's (均值 ' + t500.toFixed(0) + 's) | 记忆组 ' + j3(2, 't50', 0) + 's');
+    t50Max <= 60, '基线达半稳定·判据取最坏 ' + t50Max.toFixed(0) + 's (均值 ' + t500.toFixed(0) + 's, 三种子 ' + j3(0, 't50', 0) + 's) | 记忆组 ' + j3(2, 't50', 0) + 's');
   check('③c 不伤害·全天: 三个白天总账(三种子均值) ≥ 基线 0.98 倍 —— 只判不亏; 收益一律不予宣称(基线自身跨种子极差 ' + (spread0 * 100).toFixed(1) + '%)',
     K2 >= K0 * 0.98, K2.toFixed(0) + ' vs ' + K0.toFixed(0) + ' (' + (100 * K2 / K0).toFixed(1) + '%) | 每种子 ' + run3.map((o) => (o[2].all / o[0].all).toFixed(3)).join('/') + '×');
   check('③d 不伤害·清晨: 晨间 120s 平均吞吐(三种子均值) ≥ 基线 0.95 倍 —— 若记忆在最该帮它的时段反而拖慢, 说明双通道份额制失灵',

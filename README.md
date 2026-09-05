@@ -39,6 +39,11 @@ npm run build      # 产物在 dist/
   宽度/分叉/强弱全丢; =1(默认)是对数上肩的有界色阶——「色阶参考浓度」那一格=半亮, 其上每
   翻倍亮一档, 256× 才到白热上限, 所以最热的干线和它旁边的支路是两种颜色。同一份场数据前后对比:
   纯白像素 5.71%→0.00%, 觅食网内可辨亮度级数 1→134。HUD 第一行自报「渲染 WebGL2」或「Canvas2D(兜底)」。
+- **光污染 II（P2.3.2）**: 让"发光一坨"消失的两条腿。①「扩散权重」出厂 0.06→**0.02**——这是推导值不是手感值:
+  信息素云的衰减长度 ℓ=√(D/λ) 必须 ≤ 触角长度 26 单位, 否则场里存着蚂蚁根本读不到的信息(实测吞吐 **+7%**、
+  失败行程 **−18%**)。②「自适应曝光」(场组, 默认开): 色阶参考浓度跟着**蚂蚁脚下实际闻到的剂量中位数**走,
+  只收光不加光——过曝的管饱场景雾可见半径 9.3→**2.3 格**、离路死光 38.7%→**8.2%**, 而常规玩法画面逐位不变。
+  `autoPeak=0`(退回钉死的滑杆) 与 `diffuseWeight=0.06`(退回旧扩散) 各自都能单独回退。
 - **个体路线记忆(P2.4)**: 每只空手出门的工蚁把自己的路记成一串航点, 回到巢里卸货时才"提交"成正式路线;
   闻不到走廊时(夜里蒸发、被雨冲平、被捕食者撕断)改走自己记得的那条, 连续扑空两次就废弃。
   **最好看的时刻是黎明前**——集体走廊被夜削到百分之一, 开了记忆就不必全群从零重踩。
@@ -55,11 +60,15 @@ npm run build      # 产物在 dist/
   `node predator_check.mjs` 捕食者/报警 A→B→C 验收;
   `node weather_check.mjs` 昼夜/天气四组验收(SUB=identity,storm,antiphase,temp 可分组);
   `node memory_check.mjs` **个体路线记忆验收**(①恒等 ②稳定单源 ③昼夜三天×三种子 ④撤源废弃 ⑤弱场压平;
-  23 断言 / 全跑约 25 分钟, SUB=identity,stable,night,abandon,weak 可分组)。
+  24 断言 / 全跑约 25 分钟, SUB=identity,stable,night,abandon,weak 可分组)。
   `node wipe_diag.mjs` 是 P2.4 ③ 段的**破案现场**(三变体诊断台, 记录了假数字 6720× 怎么来的), 非门禁;
   `render_png.mjs`(RENDER_SECS/RENDER_OUT/PARAMS/WALL/PRED, 另有 WX_STORM_AT/WX_JUMP/FOOD) 出验收图;
   `probe_wall.mjs` 墙穿透探针; `weather_diag.mjs`(MODE=phantom|dwell|wave) 昼夜/假家诊断台;
   `node glare_check.mjs` **光污染验收**(同一份场数据新旧色阶逐像素对比; SUB=rich,rich07,rich10,default,rain,alarm;
   SHOTS=1 顺带出 screenshots/glare_*.png 左右对比图)。
+  `node fog_check.mjs` **光污染·场层**(离最近蚁路多少格的格子发出了多少光: 死光占比/衰减长度/吞吐护栏 F1-F6;
+  SECS=240 TRAIL=40 SUB=glare,wxcheck,predcheck 可分组);
+  `node glow_check.mjs` **光污染·像素层**(把画面按"离路多少格"分箱, 读 tone() 之后的亮度: 雾可见半径 R25/雾亮比 ρ/
+  像素死光/走廊级数 G1-G6; 同一份场数据并排量 12 种曝光方案, 其中"自适应模块"一行是真走 render/exposure.js)。
 - 指标与实验记录见 **METRICS.md**, 规划见 **ROADMAP.md**。
 - 红线: 新机制参数门控(0=旧行为 bit 级); 改热路径必须过校验和; 指标跨机制不可直比。

@@ -12,6 +12,7 @@ import { World } from "./sim/world.js";
 import { Colony } from "./sim/colony.js";
 import { Weather, weatherActive } from "./core/weather.js";
 import { tone, rampColor, FIELD_STOPS, ALARM_STOPS } from "./render/palette.js";
+import { updateExposure, effPeak, resetExposure } from "./render/exposure.js";
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { PNG } from "pngjs";
 
@@ -166,14 +167,23 @@ for (const [key, sc] of Object.entries(SCEN)) {
   const useAlarm = !!sc.opt.pred;
   const O = metrics(S.field, peak, legacyField, useAlarm ? S.alarmField : null, apeak, legacyAlarm);
   const N = metrics(S.field, peak, newField, useAlarm ? S.alarmField : null, apeak, newAlarm);
+  // P2.3.2 并列读数: 同一帧走**真正的 exposure.js 模块**(不是手工换算), 看自适应曝光把这张图改成什么样。
+  resetExposure();
+  updateExposure(S.field, S.colony, sc.secs);
+  const autoPk = effPeak();
+  const A = metrics(S.field, autoPk, newField, useAlarm ? S.alarmField : null, apeak, newAlarm);
   const fmax = (() => { let m = 0; for (let i = 0; i < S.field.buf.length; i++) m = Math.max(m, S.field.buf[i]); return m; })();
   console.log(`  场强: max ${fmax.toFixed(2)} = ${(fmax / peak).toFixed(1)}×peak | 觅食网 ≥peak 的格子 ${O.netPct.toFixed(2)}%`);
   const fmt = (m) => `纯白 ${m.whitePct.toFixed(2)}% | 溢出 ${m.overPct.toFixed(2)}% | 最大通道 ${m.maxCh.toFixed(2)} | 网内可辨级数 ${m.levels} | 相对反差 ${(m.rel * 100).toFixed(1)}% | 顶格 ${m.ceilPct.toFixed(1)}%·跨 ${m.flatOct.toFixed(2)} 倍频程 | 众数色 ${m.modePct.toFixed(1)}% | 淡痕亮度 ${(m.haze * 255).toFixed(1)}/255`;
   console.log("  旧 " + fmt(O));
   console.log("  新 " + fmt(N));
+  console.log("  自 " + fmt(A) + `   (自适应 peak=${autoPk.toFixed(2)} = ${(autoPk / peak).toFixed(2)}×滑杆)`);
   rows.push([sc.label, O, N]);
   if (key === "default") {
     check("常规玩法不被做暗(淡痕亮度 ≥ 旧)", N.haze >= O.haze * 0.9, `新 ${(N.haze * 255).toFixed(1)} vs 旧 ${(O.haze * 255).toFixed(1)}/255`);
+    // P2.3.2 预登记(看结果之前写死): 自适应曝光在常规玩法里最多只许"收"1/4 倍频程。
+    // 阈值依据 = 亮度韦伯分数(整体亮度差 <25% 玩家看不出来), 超过就说明锚点把主画面抢走了。
+    check("自适应(常规玩法): 收光幅度 ≤ 1/4 倍频程", autoPk >= peak && autoPk <= peak * Math.pow(2, 0.25), `effPeak ${autoPk.toFixed(3)} vs 滑杆 ${peak}`);
   } else {
     check("纯白像素占比降到旧的 1/10 以下", N.whitePct <= O.whitePct / 10 + 1e-9, `新 ${N.whitePct.toFixed(2)}% vs 旧 ${O.whitePct.toFixed(2)}%`);
     check("觅食网内可辨亮度级数 ≥ 旧的 4 倍", N.levels >= O.levels * 4, `新 ${N.levels} 级 vs 旧 ${O.levels} 级`);
@@ -181,10 +191,18 @@ for (const [key, sc] of Object.entries(SCEN)) {
     // 在站点处导数为零造成的"驻点平台"——这是任何带肩部的 tone curve 的固有性质(胶片曲线同理),
     // 量级上远好于旧色阶"凡 ≥peak 全压成同一色"。判据因此写成两条: 绝对值 ≤2.5 倍频程(4× 浓度),
     // 且必须比旧色阶窄到 0.6 倍以下。旧色阶实测 2.58–7.42 倍频程。
+    // ⚠ P2.3.2 交底: 本判据在 diffuseWeight 出厂 0.06→0.02 之后于 rich 场景 FAIL(2.95 倍频程)。
+    // 原因不是色阶退步, 而是扩散本来就在替色阶抹平浓度差: dw 变小 → 顶格之间的真实浓度差被放回画面。
+    // 判据一个字不改, FAIL 如实入库; 下一行新增的自适应判据给出的是治法而不是改考卷。
     check("顶格浓度跨度 ≤ 2.5 倍频程 且 ≤ 旧色阶的 0.6 倍",
       N.flatOct <= 2.5 && N.flatOct <= O.flatOct * 0.6,
       `新 ${N.flatOct.toFixed(2)} 倍频程 vs 旧 ${O.flatOct.toFixed(2)} 倍频程`);
   }
+  // 撤销(本轮自己踩的坑, 留注释在此): 原本在这里加过一条"自适应把顶格跨度压回 ≤2.5 倍频程"的判据,
+  // 4 个场景全绿。但那道绿是构造出来的——metrics() 的"觅食网"本身就按 peak 定义(v≥peak),
+  // 换 peak 等于换被测量的像素集合: 自适应 peak=36.56 时网只剩最浓的 1.5 个倍频程, 跨度当然小。
+  // 评价自适应曝光的资格在 glow_check: 它按"离路多少格"分箱, 分箱与 peak 无关, 换曝光仍可比。
+  // 所以上面的"自"行只留作读数, 不再 check。原判据(固定 peak)的 FAIL 保留, 见 §交底。
   check("新色阶零溢出", N.overPct === 0, `溢出 ${N.overPct.toFixed(3)}%`);
   if (process.env.SHOTS) {
     if (!existsSync("screenshots")) mkdirSync("screenshots");

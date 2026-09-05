@@ -4,6 +4,7 @@
 import { Backend } from './backend.js';
 import { values } from '../core/config.js';
 import { tone, rampLut, lutIndex, FIELD_STOPS, ALARM_STOPS } from './palette.js';
+import { effPeak } from './exposure.js';
 
 const PALETTE = (() => {
   // 信息素:暗底 → 蓝 → 金
@@ -89,7 +90,7 @@ export class Canvas2DBackend extends Backend {
       this._img = new Uint8ClampedArray(gw * gh * 4);
       this._idata = new ImageData(this._img, gw, gh);
     }
-    const img = this._img, src = field.buf, peak = values.peak;
+    const img = this._img, src = field.buf, peak = effPeak();   // P2.3.2: 与 WebGL 共用 effPeak,三条渲染路径不会分叉
     // 报警信息素(P2.2): 活动时在同一张 ImageData 里叠危险红(一次循环合成, 不再开离屏)
     const alarm = view.alarm && view.alarm.field ? view.alarm : null;
     const asrc = alarm ? alarm.field.buf : null;

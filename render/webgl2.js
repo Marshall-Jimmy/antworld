@@ -9,6 +9,7 @@
 import { Backend } from './backend.js';
 import { get, values, SCHEMA } from '../core/config.js';
 import { glslRamp, glslTone, FIELD_STOPS, ALARM_STOPS } from './palette.js';
+import { effPeak } from './exposure.js';
 
 const VS_FIELD = `#version 300 es
 in vec2 aPos; in vec2 aUv;
@@ -530,7 +531,7 @@ export class WebGL2Backend extends Backend {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
     this._use(gl, this.pField);
-    gl.uniform1f(this.loc.peak, values.peak);
+    gl.uniform1f(this.loc.peak, effPeak());   // P2.3.2: 参考浓度可由自适应曝光接管(effPeak 保证只收光不加光)
     gl.bindVertexArray(this.vaoField);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     gl.bindVertexArray(null);

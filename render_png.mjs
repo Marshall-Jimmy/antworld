@@ -9,6 +9,7 @@ import { Field } from './sim/fields.js';
 import { World } from './sim/world.js';
 import { Colony } from './sim/colony.js';
 import { Weather, weatherActive } from './core/weather.js';
+import { updateExposure, effPeak, exposure } from './render/exposure.js';
 
 // ---- 跑 SIM(默认 40s; RENDER_SECS 可覆盖) ----
 const seed = 'render';
@@ -76,6 +77,9 @@ for (let t = 0; t < SIM_T * 60; t++) {
   }
   colony.step(field, world, values, dt, world.predator ? alarmField : null, envNow);
 }
+// 自适应曝光(P2.3.2): 截图前按「蚁脚剂量中位数」定一次参考浓度。
+// 与 app 的区别:headless 没有逐帧滤波的过程可复现,直接落位即等价于跑满时间常数。
+updateExposure(field, colony, SIM_T);
 
 // ---- 渲染 ----
 const SCALE = 0.4;   // 世界→图像像素
@@ -125,10 +129,10 @@ for (let gy = 0; gy < field.gh; gy++) {
     if (softTone) {
       // 软压缩有界色阶: 与 WebGL/Canvas2D 共用 palette.js。PNG 路径的 px() 是"覆盖"而非叠加,
       // 所以这里要自己把背景加上, 才等价于着色器的 clear(bg*amb) + additive(ramp*amb)。
-      const li = lutIndex(tone(v / values.peak)) * 3;
+      const li = lutIndex(tone(v / effPeak())) * 3;
       cr = bgCol[0] + flut[li]; cg = bgCol[1] + flut[li + 1]; cb = bgCol[2] + flut[li + 2];
     } else {
-      const t = Math.min(1, Math.max(0, v / values.peak));
+      const t = Math.min(1, Math.max(0, v / effPeak()));
       const e = t * t * (3 - 2 * t);
       cr = 5 + (56 - 5) * smooth(t, 0, 0.55) + 255 * e * e * 1.8;
       cg = 13 + (140 - 13) * smooth(t, 0, 0.55) + 199 * e * e * 1.8;
