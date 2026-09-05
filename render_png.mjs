@@ -12,10 +12,15 @@ import { Colony } from './sim/colony.js';
 import { Weather, weatherActive } from './core/weather.js';
 import { updateExposure, effPeak, exposure } from './render/exposure.js';
 import { displayField } from './render/perception.js';
-import { applyPresetParams, buildPresetWorld } from './core/presets.js';
+import { applyPresetParams, buildPresetWorld, buildDefaultFoods } from './core/presets.js';
 
 // ---- 跑 SIM(默认 40s; RENDER_SECS 可覆盖) ----
-const seed = 'render';
+// SCENE=default → 画**出厂散粮**(P2.4e 的一近一主两块种子), 而不是下面那块硬编码的旧源。
+// 为什么是 opt-in 而不是直接换默认: look_check 的 A1-A5 钉的就是本文件**默认臂**的像素哈希,
+// 改默认等于拿验收图去迁就新场景; 旧臂还得留着拍「断粮 200 单位」那张对照图。
+const SCENE_DEFAULT = process.env.SCENE === 'default';
+// RENDER_SEED 换随机落位(默认 'render' 不动, 否则旧截图的哈希会漂)。
+const seed = process.env.RENDER_SEED || 'render';
 const SIM_T = Number(process.env.RENDER_SECS || 40);
 const OUT_NAME = process.env.RENDER_OUT || 'corridor.png';
 // PARAMS=k=v,k=v 覆盖任意参数(A/B 对比用; 非数值串原样保留给枚举/布尔)
@@ -35,7 +40,7 @@ const alarmField = new Field(w, h, values.gridCell);
 const fx = w * 0.62, fy = h * 0.62;
 // FOOD=<单位> 加大食源: 默认 200 保持旧截图逐位不变; 昼夜/风暴对比图要跑 150s+,
 // 200 单位会在半分钟内被 5000 只蚁吃空(实测卸货恒定卡在 311 = 食源上限), 画面会误判成"蚁群崩盘"。
-world.addFood(fx, fy, 30, Number(process.env.FOOD || 200));
+if (!SCENE_DEFAULT) world.addFood(fx, fy, 30, Number(process.env.FOOD || 200));
 // PRED=1 → 捕食者放在巢→食物直线中点; PRED=x,y → 指定坐标(世界单位)。放它才启用 alarm。
 if (process.env.PRED) {
   let pxx, pyy;
@@ -64,6 +69,12 @@ if (PRESET && PRESET !== 'default') {
   console.log(`预设 ${PRESET}: 墙 ${rep.wallCount} 格 · 食源 ${rep.foods} 块 · 总剂量 ${rep.dose}`);
 }
 const colony = new Colony(values.antCount, { rng: r, world, nestRadius: values.nestRadius });
+// 顺序与 app.js reset() 一致: **先 Colony 再放粮**。反了会挪动蚂蚁侧随机流, 画出来的就不是出厂那一幅。
+if (SCENE_DEFAULT) {
+  const { total, dose } = buildDefaultFoods(world, r, Number(process.env.FOOD || 0));
+  console.log(`出厂散粮 seed=${seed}: 总剂量 ${total} → 实放 ${dose} · ` +
+    world.foodPatches.map((p) => `(${Math.round(p.x)},${Math.round(p.y)}) r${p.radius} ${p.amount}u`).join(' + '));
+}
 const dt = 1 / 60;
 // 昼夜与天气(P2.3)出图开关(环境变量, 参数本身走 PARAMS=dayNight=1 / weather=1):
 //   WX_STORM=1 (或 RAIN=1) → 开场就排雨; WX_STORM_AT=<秒> → 先跑熟路网再排雨。
@@ -94,6 +105,9 @@ for (let t = 0; t < SIM_T * 60; t++) {
 // P2.3.4: 与 app 同源——截图画的和截图定曝光用的是**同一个**对象(lateralK=0 时即 field 本身)
 const disp = displayField(field);
 updateExposure(disp, colony, SIM_T);
+// 拍图前把每块食源的余量打出来: 「缺口该不该看得见」得能用数字当场判定, 不能靠肉眼猜。
+console.log('食源余量 @' + SIM_T + 's: ' + world.foodPatches.map((p, i) =>
+  `#${i} ${(p.amount / p.a0 * 100).toFixed(1)}% (${p.amount.toFixed(0)}u)`).join(' · '));
 
 // ---- 渲染 ----
 const SCALE = Number(process.env.SCALE || 0.4);   // 世界→图像像素
