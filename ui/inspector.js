@@ -26,9 +26,15 @@ export class Inspector {
     // 信息小面板
     this.info = document.createElement('div');
     this.info.style.cssText =
-      'position:fixed;top:10px;right:10px;font:11px/1.6 ui-monospace,Consolas,monospace;' +
-      'color:#cfe3f5;background:rgba(6,10,22,.85);border:1px solid #2a3c58;padding:6px 10px;' +
-      'pointer-events:none;white-space:pre;display:none;';
+      // P2.4i 两处跟着 P2.4h 的分区改:
+      //  1) top 从 10px 换成「顶栏下沿 + 8px」。顶栏在 P2.4h 之前是居中卡片, 右上角本来是空的,
+      //     这张卡钉在 top:10 刚好躲开; 顶栏改成【整宽】之后 0~33px 整条都是它的地盘,
+      //     于是「点一只蚁」会把跟拍/曲线/录像那排按钮压住 —— 五层分区的实测漏掉了这第六层。
+      //  2) 底色从夜空蓝换成纸色(与 #hud 同一套): 画面早就白纸墨色了, 浮层留着旧夜色会互相抢对比度。
+      'position:fixed;top:calc(var(--bar-h, 34px) + 8px);right:10px;' +
+      'font:11px/1.6 ui-monospace, "Cascadia Mono", Consolas, monospace;' +
+      'color:#23201b;background:rgba(252,250,245,.93);border:1px solid #d9d2c4;border-radius:5px;' +
+      'padding:5px 9px;pointer-events:none;white-space:pre;display:none;';
     host.appendChild(this.info);
   }
 
@@ -55,8 +61,14 @@ export class Inspector {
   // (P2.4 给信息面板加了"记忆"一行, 这个老毛病才暴露)。面板比 inspector 晚创建,
   // 所以每次显示时量一次实际宽度, 不写死常数。
   infoRight() {
-    const paneEl = document.querySelector('.tp-dfwv');
-    this.info.style.right = ((paneEl && paneEl.offsetWidth) || 260) + 18 + 'px';
+    // P2.4i 病根(实测): 让开量必须量【宿主 #pane-host】, 而不是 .tp-dfwv。
+    // panel.js 把 Pane.element(它是 .tp-rotv)搬进宿主之后, 库留在 body 上的 .tp-dfwv 壳空了
+    // (实测 rect 1030,8,256x0 · offsetWidth 恒为 256), 而宿主实宽 306 —— 于是少让 42px,
+    // 检视卡的右半边一直压在面板左沿上。量错元素比写死常数更隐蔽: 它看起来是「动态量的」。
+    const hostEl = document.getElementById('pane-host');
+    const paneW = hostEl ? Math.ceil(hostEl.getBoundingClientRect().width) : 0;
+    // 宿主自己钉在 right:10 ⇒ 让开量 = 306 + 10 + 8 缝 = 324。宿主不在(或宽 0)时退回贴右边 18px。
+    this.info.style.right = (paneW ? paneW + 18 : 18) + 'px';
   }
 
   record() {

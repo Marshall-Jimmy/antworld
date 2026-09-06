@@ -141,14 +141,14 @@
       font: inherit; font-size: 11.5px; color: #3a332a; max-width: 128px;
       background: #fbf8f2; border: 1px solid #ded6c6; border-radius: 4px; padding: 2px 3px; cursor: pointer;
     }
-    /* 参数面板: 定位与滚动都交给这个宿主, tweakpane 自己的根元素改成 static。
-       原来 .tp-dfwv 是 fixed + max-height(见上面 P2.4d 那条), 现在换成宿主承担 ——
-       同一件事只做一次, 否则两处各管一半宽度会打架。 */
+    /* 参数面板: 定位与滚动都交给这个宿主 #pane-host。
+       P2.4i 实测更正: Pane.element 其实是 .tp-rotv, 库样式里它没有 width/position, 搬进宿主就铺满 306 宽,
+       不需要任何 !important 覆盖。被搬走的是它; .tp-dfwv 只是库挂在 body 上的定位壳, 搬完就成了空壳。 */
     #pane-host {
       position: fixed; top: calc(var(--bar-h) + 8px); right: 10px; width: 306px;
       max-height: calc(100vh - var(--bar-h) - 18px); overflow-y: auto; overscroll-behavior: contain;
     }
-    #pane-host .tp-dfwv { position: static !important; width: auto !important; max-height: none !important; }
+    /* (P2.4i 删除) 上一条点名的空壳: 这里原来有一条 .tp-dfwv 覆盖, 实测 .tp-dfwv 不在宿主里(rect 1030,8,256x0), 规则从未命中。 */
      /* 小窗兜底: 顶栏宁可换成两行也要保住每个按钮都能点(栏高变了 --bar-h 跟着长, 不会盖住读数);
         两行时先藏掉「场景/视图」两个段标题省地方。 */
      @media (max-width: 900px) { .tb-cap { display: none; } }

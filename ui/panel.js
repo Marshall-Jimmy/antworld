@@ -45,7 +45,7 @@ export class Panel {
     this.p = new Pane({ title: '参数', expanded: true });
     this.onChange = params.onChange || (() => {});
     this.onResetStats = params.onResetStats || (() => {});
-    // 面板搬进宿主: #pane-host 负责 fixed 定位 + 滚动条, tweakpane 的根元素改成 static。
+    // 面板搬进宿主: #pane-host 负责 fixed 定位 + 滚动条。搬走的是 Pane.element(它是 .tp-rotv, 本身就 static)。
     // 不用它的 container 选项: 搬一次 DOM 是确定动作, 少一个依赖版本行为的赌注。
     const host = document.getElementById('pane-host');
     if (host && this.p.element) host.appendChild(this.p.element);
@@ -108,7 +108,7 @@ export class Panel {
   // 过滤框(P2.4d ④)。为什么是原生 <input> 而不是 tweakpane 的文本控件:
   //  ① 它不是参数 —— 绑进 config 会污染 SCHEMA/分享链接/「已偏离出厂 N 项」的计数;
   //  ② 它要插在【夹子列表之外】的最顶上, 而 tweakpane 的控件只能成为某个容器的一个 blade。
-  // 插入点实测: .tp-dfwv > .tp-rotv.tp-cntv > .tp-rotv_c > 12 个 .tp-fldv。取不到就退回
+  // 插入点实测(P2.4i 更正): #pane-host > .tp-rotv.tp-cntv > .tp-rotv_c > 12 个 .tp-fldv。取不到就退回
   // append 到根元素 —— 退化的表现是过滤框跑到最下面, 而不是抛错把整个面板带走。
   addFilterBox() {
     const root = this.p.element;
