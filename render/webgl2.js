@@ -118,8 +118,9 @@ void main(){
     local = vec2(aCorner.x * sz * 1.7, aCorner.y * sz);
     vP = aCorner;
   } else {
-    // 新风格: uLen = 一只蚁的体长(世界单位) = antLen 屏幕像素 / 当前缩放。ANT_U/ANT_V 来自
-    // render/look.js 的轮廓框(体长=1 的蚁单位), 触角尖与腿尖都在框内。
+    // 新风格: uLen = 一只蚁的体长, 单位就是世界单位(P2.4g: antLen 不再是"在屏幕上永远那么大"的贴片,
+    // 它得和世界里的别的东西一起被缩放)。ANT_U/ANT_V 来自 render/look.js 的轮廓框(体长=1 的蚁单位),
+    // 触角尖与腿尖都在框内。
     float bl = uLen * (1.0 + (aVar - 0.5) * 0.24 * uVar);
     vP = vec2(aCorner.x * 2.0 * ${ANT_U}, aCorner.y * 2.0 * ${ANT_V});
     local = vP * bl;
@@ -858,10 +859,11 @@ export class WebGL2Backend extends Backend {
     gl.uniform1f(this.loc.antStyle, style ? 1 : 0);
     gl.uniform1f(this.loc.antVar, av);
     if (style) {
-      // 体长: antLen 是**屏幕 CSS 像素**(与缩放无关, 所以推近拉远都读得出同一只蚁),
-      // 除以当前缩放换成世界单位。LOD 由体长与蚁数共同决定(见 look.js antLod 的理由)。
-      gl.uniform1f(this.loc.antLen, values.antLen / (this._zoom ?? 0.5));
-      gl.uniform1f(this.loc.antLod, antLod(values.antLen, n));
+      // 体长: antLen 是世界单位(虫子的真实大小), 直接进 uLen —— 相机推近它就变大。
+      // LOD 反过来必须按**屏幕上的实际像素数**判(体长 × zoom): 全景里一只蚁只有几个像素,
+      // 还硬按"11 像素"那一档给它画触角, 画出来的就是亚像素噪声 —— 比不画更像斑点。
+      gl.uniform1f(this.loc.antLen, values.antLen);
+      gl.uniform1f(this.loc.antLod, antLod(values.antLen * (this._zoom ?? 0.5), n));
     }
     // 新色阶下蚂蚁按身体画(alpha 混合), 旧色阶下保持 additive 以逐位复现旧截图;
     // 黑壳工蚁永远是不透明实体(它在纸上, 不是在夜里发光)

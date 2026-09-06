@@ -112,9 +112,10 @@ console.log('食源余量 @' + SIM_T + 's: ' + world.foodPatches.map((p, i) =>
 // ---- 渲染 ----
 const SCALE = Number(process.env.SCALE || 0.4);   // 世界→图像像素
 // CROP=x0,y0,x1,y1(世界单位)出特写: 蚂蚁/食物的细节在 800x520 的全景里根本判不出来。
-// 注意语义: antLen 是**屏幕像素**, 而屏幕对应一个参考缩放 ZOOM_REF(≈1600px 宽的画布装下 2000u 世界),
-// 所以蚁的世界体长 = antLen/ZOOM_REF。SCALE 调大 = 相机推近 = 蚁在图上更大, 与浏览器里一致。
-const ZOOM_REF = 0.8;
+// P2.4g: antLen 是**世界单位**(虫子的真实大小), 所以图上的体长像素 = antLen × SCALE —— 与浏览器里
+// 「体长像素 = antLen × zoom」是同一条式子, SCALE 就是这台相机的缩放。LOD 一律按图上的实际像素判。
+// (旧版在这里除一个硬编码 ZOOM_REF=0.8, 等于宣称"出图里的蚁永远有全景那么大" —— 出图与浏览器两套
+//  尺寸口径就是这么分家的: 同一段仿真, 浏览器里蚂蚁不随缩放变、出图里却随 SCALE 变。现在只有一副尺子。)
 const CROP = (process.env.CROP || "").split(",").map(Number);
 const hasCrop = CROP.length === 4 && CROP.every((v) => Number.isFinite(v));
 const cx0 = hasCrop ? CROP[0] : 0, cy0 = hasCrop ? CROP[1] : 0;
@@ -307,8 +308,8 @@ for (let pi = 0; pi < world.foodPatches.length; pi++) drawFoodPatch(world.foodPa
 // 轮廓来自 render/look.js 的 antCoverage()(与 GLSL 同一张形状表), 逐像素求覆盖度。
 const nAntsDraw = colony.population !== undefined ? colony.population : colony.count;
 if (antStyleOn) {
-  const Lw = values.antLen / ZOOM_REF;                 // 体长(世界单位)
-  const lod = antLod(values.antLen, nAntsDraw);
+  const Lw = values.antLen;                            // 体长(世界单位) —— 参数本身就是世界单位了
+  const lod = antLod(values.antLen * SCALE, nAntsDraw);   // 细节档按**图上的**像素数判
   const step = 1 / SCALE;
   const av = values.antVar;
   const mid = CHITIN[1];

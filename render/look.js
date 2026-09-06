@@ -129,7 +129,9 @@ export function antCoverage(x, y, lod) {
   if (cc > crumb) crumb = cc;
   return { body, crumb, sheen };
 }
-// 屏幕像素→轮廓细节档: 触角在 7.5 px 以下就是亚像素噪声(画了反而更像斑点), 腿要 13 px 以上;
+// 渲染面上的体长像素→轮廓细节档(P2.4g: 参数 antLen 是世界单位, 所以传进来的必须是 体长×缩放
+// 或 体长×SCALE, 不是参数原值 —— 三条渲染路径共用这一个函数, 降级点因此必然一致)。
+// 触角在 7.5 px 以下就是亚像素噪声(画了反而更像斑点), 腿要 13 px 以上;
 // 蚁数一多, 高细节档的填充率会先吃掉帧预算 ⇒ 数量也参与决定 LOD(不是可选装饰, 是护栏)。
 export function antLod(pxLen, n) {
   if (pxLen < 7.5) return 0;

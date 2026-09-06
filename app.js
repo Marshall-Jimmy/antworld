@@ -14,6 +14,7 @@ import { updateExposure, effPeak, exposure, resetExposure } from './render/expos
 // P2.3.4 侧抑制: 屏幕该画什么、曝光该锚在什么上,都由这**一个**函数决定(见其注释)。
 import { displayField, perception, resetPerception } from './render/perception.js';
 import { Panel } from './ui/panel.js';
+import { Toolbar } from './ui/toolbar.js';
 import { Inspector } from './ui/inspector.js';
 // P2.4b 交互层四件套: 滑窗统计 / 场景预设 / 个体事件观察 / 曲线面板 + 录像。
 // 共同点: **全部只读 sim**(见 stats_check S3「开着量具跑 ≡ 一次都不读」的逐位证明)。
@@ -79,6 +80,7 @@ function reset() {
     followIdx = story.idx;
     showToast(followIdx >= 0 ? "跟拍对象已随新 colony 重置" : "跟拍的那只蚁不在了, 镜头停下(G 跟下一只)");
   }
+  toolbar.setOn('follow', followIdx >= 0);   // P2.4h: 这一臂不走 setFollow(), 按钮状态要自己补一下
   // 预设布局在 reset 之后重放: reset() 会按出厂布局摆那块默认食源, 预设要把它换成自己的场景。
   if (presetId && presetId !== 'default') {
     const rep = buildPresetWorld(presetId, world);
@@ -188,11 +190,20 @@ const recorder = new Recorder(() => [canvas, inspector.cv]);
 
 // ---------- 相机 ----------
 const camera = { cx: get('worldW') / 2, cy: get('worldH') / 2, zoom: 0.5 };
+// ?zoom=<全景倍数>(P2.4g): 把相机停在「全景的 N 倍」上, 于是「蚁体长是世界单位」这件事在浏览器里
+// 也能被一条 URL 复现/分享, 而不是只能靠人手滚轮。乘子作用在 refit() 里而不是只作用一次:
+// 换窗口尺寸时全景本身会变, 「全景的 5 倍」才是那个一直成立的说法。不带 = 乘子 1, 出厂行为一字不变。
+const ZOOM0 = (() => {
+  const raw = new URLSearchParams(location.search).get('zoom');
+  if (raw === null) return 1;
+  const v = Number(raw);
+  return Number.isFinite(v) && v > 0 ? v : 1;
+})();
 let fitZoom = 0.5;
 function refit() {
   const w = canvas.clientWidth, h = canvas.clientHeight;
   fitZoom = Math.min(w / get('worldW'), h / get('worldH')) * 0.92;
-  camera.zoom = fitZoom;
+  camera.zoom = fitZoom * ZOOM0;
   camera.cx = get('worldW') / 2;
   camera.cy = get('worldH') / 2;
 }
@@ -229,6 +240,9 @@ function setFollow(idx) {
     followZoom = FOLLOW_ZOOM();
     inspector.infoRight();
   }
+  // P2.4h: 跟拍状态推给工具条(按钮要亮起来)。setFollow 是唯一入口, 所以键盘 G、右键取消、
+  // 换 colony 之后那次自动改号全都自动同步, 不必在四个调用点各写一遍。
+  toolbar.setOn('follow', n >= 0);
   return n;
 }
 // 环面寻址是这里的关键细节: 世界是环面, 蚂蚁从 x=1990 迈一步到 x=2 是**正常走 straight**,
@@ -284,7 +298,7 @@ function loadPreset(id, opts = {}) {
   reset();
   refit();
   panel.syncValues();          // 参数增量要显示回滑杆, 否则面板写着 30 而仿真正在用 120
-  panel.setPreset(id);
+  toolbar.setPreset(id);     // P2.4h: 预设下拉在工具条上, 不在面板里了
   pushUrl();
   if (!opts.quiet) {
     // 只**读**当下世界的布局做报告。这里绝不能再调一次 buildPresetWorld:
@@ -296,6 +310,33 @@ function loadPreset(id, opts = {}) {
   return true;
 }
 
+// ---------- P2.4h · 顶部工具条(动作按钮的家) ----------
+// 这十个 handler 与 P2.4d 之前面板里那批按钮调的是同一批函数, 一个语义都没新增: 搬家的目的只是
+// 让「换看法」和「调参数」不再挤同一根垂直列表(病根见 ui/panel.js 文件头 P2.4h 段)。
+// 顺序要紧: 工具条必须建在第一次 loadPreset()(下面 ?preset= 那一臂)之前, 否则 setPreset 无处可推。
+const toolbar = new Toolbar({
+  preset(id) { loadPreset(id); },
+  seed() {
+    seed = String(randomSeed());
+    reset(); refit();
+    pushUrl();
+  },
+  share() {
+    navigator.clipboard.writeText(location.origin + buildHref()).then(
+      () => showToast('分享链接已复制'),
+      () => showToast('复制失败')
+    );
+  },
+  storm() { doStorm(); },
+  clock() { doJumpClock(); },
+  follow() { toggleFollow(); },
+  graph() { toggleGraph(); },
+  record() { toggleRecord(); },
+  hud() { cycleHud(); },
+  quality() { cycleRenderScale(); },
+});
+
+// 面板从此只剩两个回调: 参数改动本身, 和「重置搜索计时」这件面板自己的事。
 const panel = new Panel({
   onChange() {
     // 结构性参数变化需要重建
@@ -309,27 +350,6 @@ const panel = new Panel({
     stats.firstFood = null; stats.startT = performance.now(); stats.loadedMax = 0;
     showToast('搜索计时已清零');
   },
-  onSeed() {
-    seed = String(randomSeed());
-    reset(); refit();
-    pushUrl();
-  },
-  onStorm() { doStorm(); },
-  onJumpClock() { doJumpClock(); },
-  onShare() {
-    navigator.clipboard.writeText(location.origin + buildHref()).then(
-      () => showToast('分享链接已复制'),
-      () => showToast('复制失败')
-    );
-  },
-  onPreset(id) { loadPreset(id); },
-  onFollow() { toggleFollow(); },
-  onGraph() { toggleGraph(); },
-  onRecord() { toggleRecord(); },
-  // 与 H 键同语义: 不带参数进来就是「切下一档」(0→1→2→0)。若沿用 setLevel(undefined),
-    // 面板按钮会把 HUD 打回「精简」而不是循环, 鼠标与键盘就不等价了。
-    onHud() { showToast(`界面详略: ${hud.setLevel((hud.level + 1) % 3)}`); },
-    onQuality() { cycleRenderScale(); },
 });
 
 // ---------- 初始化世界(inspector 已声明,reset 才能挂 colony) ----------
@@ -363,6 +383,15 @@ function effRenderScale() {
 }
 // 切一档出画分辨率, 并写回地址栏的 ?renderScale=: PASSTHROUGH 是开局对 location.search 拍的快照,
 // 不改它的话「复制分享链接」会把这一档丢掉, 一次手调就变成不可复现的东西(能分享的才是证据)。
+// HUD 详略(P2.4h): 键盘 H 与工具条按钮共用这一个入口。之前两处各写了一遍 (level+1)%3,
+// 而工具条的角标要跟着档位走字(精简/常用/详尽), 两个入口就迟早会漂开 —— 收成一个函数才谈得上同步。
+function cycleHud() {
+  const name = hud.setLevel((hud.level + 1) % 3);
+  toolbar.setOn('hud', hud.level > 0);
+  toolbar.setBadge('hud', name);
+  showToast(`界面详略: ${name}`);
+}
+
 function cycleRenderScale() {
   const cur = effRenderScale();
   const at = QUALITY_STEPS.findIndex((v) => Math.abs(v - cur) < 0.02);
@@ -375,6 +404,8 @@ function cycleRenderScale() {
   pushUrl();
   resize();
   showToast(pct >= 100 ? '出画分辨率 100%(出厂画质, 逐像素)' : `出画分辨率 ${pct}%(像素量为出厂的 ${px}%, 再按 Q 回出厂)`);
+  toolbar.setOn('quality', effRenderScale() < 1);     // P2.4h: 不在出厂画质时给个持久提示
+  toolbar.setBadge('quality', pct + '%');
 }
 // 注意必须先判参数存在: Number(null) 等于 0, 直接 Number() 会把「没带参数」当成「检视 0 号蚁」。
 const INSPECT0 = QRY.get('inspect') === null ? -1 : Number(QRY.get('inspect'));
@@ -518,6 +549,7 @@ function toggleFollow() {
 function toggleGraph() {
   graph.resize(window.devicePixelRatio || 1);
   graph.setVisible(!graph.visible);
+  toolbar.setOn('graph', graph.visible);   // P2.4h: 曲线开着的时候按钮亮着
   showToast(graph.visible ? '统计曲线: 最近 60 秒 (M 关)' : '统计曲线已隐藏(M 开)');
 }
 async function toggleRecord() {
@@ -528,11 +560,13 @@ async function toggleRecord() {
     // (病根与修法见 ui/recorder.js 文件头 ⚠ 段)。
     if (r.ok) showToast(`录像已保存 ${r.file} · ${r.secs.toFixed(1)}s / 投喂 ${r.frames} 帧(合成 ${r.drawn} 次) / ${sizeText(r.bytes)} · ${r.feedMode} ${r.mime}`);
     else showToast(`录像没存成: ${r.reason} · 投喂 ${r.frames} 帧/合成 ${r.drawn} 帧 · ${r.feedMode} · ${r.mime || '无编码器'}`);
+    toolbar.setOn('record', false);   // P2.4h: 停录即灭(不论这次有没有落盘成功)
     return;
   }
   const r = recorder.start();
   if (r.ok) showToast(`开始录制(再按 V 停止并存成 webm) · 投喂方式 ${r.feedMode} · ${r.mime}`);
   else showToast(`这个环境录不了: ${r.reason}`);
+  toolbar.setOn('record', recorder.active);   // P2.4h: 只有真开成才亮, 不支持编码器的环境不许亮红点
 }
 
 window.addEventListener('keydown', (e) => {
@@ -556,7 +590,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'g' || e.key === 'G') toggleFollow();
   if (e.key === 'm' || e.key === 'M') toggleGraph();
   if (e.key === 'v' || e.key === 'V') toggleRecord();
-  if (e.key === 'h' || e.key === 'H') showToast(`界面详略: ${hud.setLevel((hud.level + 1) % 3)}`);
+  if (e.key === 'h' || e.key === 'H') cycleHud();   // P2.4h: 与工具条按钮同一个入口(顺带消掉重复的 (level+1)%3)
   if (e.key === 'q' || e.key === 'Q') cycleRenderScale();
   if (e.key === 'x' || e.key === 'X') {
     const n = world.wallCount;
@@ -601,6 +635,12 @@ const SPEED0 = (() => {
   return raw !== null && Number.isFinite(v) && v > 0 ? v : 0;
 })();
 if (SPEED0 > 0) { loop.setSpeed(SPEED0); showToast(`速度 ${SPEED0}×(来自 ?speed=)`); }
+// P2.4h: 两枚角标只在「变化点」被推, 所以开局要自己推一次真值 —— 否则按钮上永远空着,
+// 用户看不出当前是哪一档。放在这里而不是工具条构造处: effRenderScale() 要读 loop.timeScale, 而 loop 在几十行之后才存在。
+toolbar.setBadge('hud', hud.setLevel(hud.level));
+toolbar.setOn('hud', hud.level > 0);
+toolbar.setBadge('quality', Math.round(effRenderScale() * 100) + '%');
+toolbar.setOn('quality', effRenderScale() < 1);
 function renderFrame() {
   // 自适应曝光(P2.3.2): 每帧读一次蚁脚剂量,只读不写,不消耗随机流。
   // autoPeak=0 时 updateExposure 立刻返回、effPeak 退回滑杆 ⇒ 画面逐位不变。

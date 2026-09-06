@@ -275,13 +275,15 @@ export class Canvas2DBackend extends Backend {
   //   1 三档几丁质**分桶各画一遍**: 换 fillStyle 会让 canvas 重新解析颜色串, 逐蚁换色等于每帧 5000 次解析;
   //     分桶之后每帧只解析 3(+3) 次, 代价是数组多走两趟(一次比较, 远比一次 fill 便宜)。
   //   2 附属器线宽有 1 设备像素的下限: 着色器里触角是 smoothstep 软边(中心实、边缘虚), 这里若按
-  //     0.030 体长的硬边描线, 在 11 px 体长下会得到一根 0.3 px 的淡灰线 —— 看不见, 等于没长触角。
+  //     0.030 体长的硬边描线, 在十来像素的体长下会得到一根 0.3 px 的淡灰线 —— 看不见, 等于没长触角。
   //   3 腹部高光是一块实心浅斑而非连续衰减, 且画在身体之后: 兜底路径优先保帧率。
   _drawAntsInk(g, colony, n, sx, amb, ox, oy) {
     const P = antPaths();
     if (!P) return;                                  // 无 Path2D 的环境: 这一档不画(旧蓝方块在另一分支)
-    const av = values.antVar, base = values.antLen * this.dpr;
-    const lod = antLod(values.antLen, n);
+    // sx = zoom × dpr = 世界→设备像素, 而 antLen 现在就是世界单位(P2.4g), 所以体长的设备像素
+    // 就是 antLen × sx。兜底路径与 WebGL 主路径必须同一副尺子: LOD 用的也是 CSS 像素 antLen × zoom。
+    const av = values.antVar, base = values.antLen * sx;
+    const lod = antLod(values.antLen * this.zoom, n);
     const w = this.canvas.width, h = this.canvas.height;
     const px = colony.px, py = colony.py, th = colony.theta, ld = colony.load, uid = colony.uid;
     // 每帧重算的只有这几条颜色串(环境光逐帧变), 逐蚁循环里一次都不拼字符串

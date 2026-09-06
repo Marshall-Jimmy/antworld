@@ -6,10 +6,12 @@
   <title>Antworld · 蚂蚁世界</title>
   <style>
     :root {
-      color-scheme: dark;
+      /* P2.4h: 画面是「白纸 + 墨」, 浮层跟着走浅色。dark 会让原生 select 长成一块黑控件,
+         贴在米白工具条上像两个时代的东西。 */
+      color-scheme: light;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #03040a; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #f7f3ea; }
     #app {
       position: fixed; inset: 0;
       display: flex; flex-direction: column;
@@ -19,10 +21,13 @@
       touch-action: none; cursor: crosshair;
     }
     #hud {
-      position: fixed; top: 10px; left: 10px;
+      position: fixed; top: calc(var(--bar-h) + 8px); left: 10px;
       font: 12px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace;
-      color: #9fb6c9; background: rgba(6,10,22,0.78);
-      border: 1px solid #1c2a40; border-radius: 5px; padding: 5px 9px;
+      color: #5c5346; background: rgba(252, 250, 245, 0.93);
+      border: 1px solid #d9d2c4; border-radius: 5px; padding: 5px 9px;
+      /* P2.4h 分区: 左上=读数 / 顶部中=工具条 / 右上=参数 / 左下=曲线 / 底部中=反馈。
+         底色从「夜空蓝」换成「纸色」: 画面早就改成白纸墨色了, 浮层还留着旧夜色, 两套底色
+         互相抢对比度 —— 用户说的「丑」有一半是这个。 */
       pointer-events: none; white-space: pre; user-select: none;
       /* P2.4d 倍速性能: 删掉 backdrop-filter: blur(2px)。它不是装饰 —— 一块跟随内容的模糊层要求
          合成器每帧把 HUD 矩形下方的【整块画面】读进纹理、卷积、再贴回去, 而这发生在 frame_check
@@ -33,15 +38,16 @@
     /* P2.4b 分层 HUD: 三层各一个 div, 颜色按「多久看一次一次它」分档, 不是按实现者喜好。
        l0 = 每秒都在变的实时量(最亮) / l1 = 环境与曲线(次亮) / l2 = 操作提示与 seed(最暗, 默认藏)。
        旧版 8 行同色同号, 结果是没有一行能被眼睛挑出来——那不是信息密度, 是噪声密度。 */
-    #hud .hud-l0 { color: #d7e7f5; }
-    #hud .hud-l0 div:first-child { color: #ffffff; }
-    #hud .hud-l1 { color: #92abc0; margin-top: 3px; border-top: 1px solid #16233a; padding-top: 3px; }
-    #hud .hud-l2 { color: #6b8098; margin-top: 3px; border-top: 1px solid #16233a; padding-top: 3px; }
+    #hud .hud-l0 { color: #23201b; }
+    #hud .hud-l0 div:first-child { color: #000000; }
+    #hud .hud-l1 { color: #5c5346; margin-top: 3px; border-top: 1px solid #e6dfd1; padding-top: 3px; }
+    #hud .hud-l2 { color: #8a7f6d; margin-top: 3px; border-top: 1px solid #e6dfd1; padding-top: 3px; }
     #hud div { white-space: nowrap; }
     #toast {
       position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
-      font: 12px ui-monospace, Consolas, monospace; color: #cfe3f5;
-      background: rgba(6,10,22,0.85); border: 1px solid #2a3c58;
+      font: 12px ui-monospace, Consolas, monospace; color: #3a332a;
+      background: rgba(252, 250, 245, 0.95); border: 1px solid #d9d2c4;
+      /* 反馈条也换纸色(同上那条理由) */
       padding: 4px 12px; opacity: 0; transition: opacity .25s; pointer-events: none;
     }
     .tp-dfwv { backdrop-filter: none !important; }
@@ -53,7 +59,10 @@
        数值列从 160px 收到 118px 不是把数字藏小: 它对面那一侧原来只剩 60 多像素,
        一句「信息素场分辨率」被截成「信息素场分辨…」—— 密度问题的另一半是【读不全】。 */
     :root {
-      --tp-blade-value-width: 118px;
+      /* P2.4h: 顶栏真实高度, 由 ui/toolbar.js 的 ResizeObserver 发布(窄窗换行时它会变高)。
+         HUD 与参数面板都挂在栏下方 ⇒ 三块在任何视口宽度下都不可能重叠,
+         不再靠「给两侧预留多少宽度」去赌 HUD 那一行有多长(蚁数 5000→50000 它就长一截)。 */
+      --bar-h: 34px;
       --tp-container-vertical-padding: 6px;
       --tp-container-unit-spacing: 5px;
       --tp-container-unit-size: 21px;
@@ -62,7 +71,7 @@
     .tp-rotv { font-size: 11.5px; }
     /* 点「展开全部参数」(91 行)之后面板会顶出视口, 而它没有滚动条 ⇒ 下面的行永远够不着。
        这是「密度」的另一面: 不是行太挤, 是根本装不下。 */
-    .tp-dfwv { max-height: calc(100vh - 20px); overflow-y: auto; overscroll-behavior: contain; }
+    /* P2.4h: 这条搬给了宿主 #pane-host(见文件末尾的分区段), 免得两处各管一半宽度。 */
     .tp-filter { display: flex; align-items: center; gap: 5px; padding: 1px 4px 7px; }
     .tp-filter_i {
       flex: 1; min-width: 0; box-sizing: border-box; font: inherit; line-height: 1.6;
@@ -73,6 +82,76 @@
     .tp-filter_i:focus { outline: none; border-color: rgba(187,188,196,0.55); }
     .tp-filter_i::-webkit-search-cancel-button { -webkit-appearance: none; }
     .tp-filter_n { flex: 0 0 auto; font-size: 10px; opacity: .55; }
+
+    /* ============ P2.4h · 控件分区(用户点名「不要都堆在一起」) ============
+       到 P2.4d 为止, 右上角那一列里同时塞着: 预设下拉 + 5 个视图按钮 + 过滤框 + 11 个参数夹子
+       (91 行) + 「操作」夹子 6 个按钮。tweakpane 只有一根垂直列表可给, 所以「堆」的真身不是行距,
+       而是【不同种类的东西共用一个视觉槽位】。这一轮按「你在这里干什么」分角:
+         左上 读数(#hud) · 左下 曲线(ui/graph.js) · 底部中 反馈(#toast) —— 三处本来就在, 只换底色
+         顶部整宽 工具条(#toolbar, 见 ui/toolbar.js): 左段=换世界 | 右段=换看法
+         右上 参数(#pane-host): tweakpane 从此只管参数, 一个按钮都不留
+        顶栏原来是【居中悬浮卡片】, 靠 calc(100vw - 660px) 给两侧预留宽度来避让 —— 那是赌 HUD 一行
+        的宽度, 而它是内容驱动的(蚁数 5000→50000 那一行就长一截), 赌输就直接压字: 实测 1294px 视口下
+        HUD 右沿 368 / 顶栏左沿 330, 两块已经叠住了。这一轮改成【整宽顶栏】, HUD 与参数面板挂在栏下沿
+        (栏高发布进 --bar-h), 于是「重叠」这件事在任何视口宽度下都不可能发生, 与内容多宽无关。
+       配色与画面同源(白纸 #fcfaf5 / 墨 #2b2620 / 食物黄 #f7e7c3), 激活态用黄是因为画面里
+       「黄=被搬走的东西」已经是既有语义, 不再引入一套新颜色。 */
+    #toolbar {
+      position: fixed; top: 0; left: 0; right: 0;
+      display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+      padding: 5px 10px;
+      font: 12px/1.35 ui-monospace, "Cascadia Mono", Consolas, monospace;
+      color: #2b2620; background: rgba(252, 250, 245, 0.94);
+      border-bottom: 1px solid #d9d2c4;
+      user-select: none;
+    }
+    /* 场景段靠左、视图段靠右: 中间那道空隙就是「换世界」与「换看法」的分界。
+       两类动作离得越远, 越不会被当成同一排开关。 */
+    .tb-scene { flex: 0 0 auto; }
+    .tb-view { flex: 1 1 auto; justify-content: flex-end; min-width: 0; }
+    .tb-sec { display: flex; align-items: center; gap: 4px; }
+    .tb-cap { font-size: 10px; letter-spacing: .04em; color: #8a7f6d; padding-right: 1px; }
+    .tb-div { width: 1px; align-self: stretch; background: #e2dbcc; margin: 1px 0; }
+    .tb-btn {
+      display: inline-flex; align-items: center; gap: 4px; font: inherit; color: #3a332a;
+      background: #fbf8f2; border: 1px solid #ded6c6; border-radius: 4px;
+      padding: 2px 6px; cursor: pointer;
+    }
+    .tb-btn:hover { background: #f2ece0; border-color: #c9bfa9; }
+    .tb-btn:active { transform: translateY(1px); }
+    .tb-ico { font-style: normal; width: 13px; text-align: center; opacity: .85; }
+    .tb-name { font-size: 11.5px; }
+    .tb-kbd {
+      font: inherit; font-size: 9.5px; color: #9a9081;
+      border: 1px solid #e0d9ca; border-radius: 3px; padding: 0 3px;
+    }
+    .tb-kbd:empty { display: none; }
+    .tb-badge {
+      font-size: 10px; color: #6b6152; background: #efe9dc; border-radius: 3px;
+      padding: 0 3px; min-width: 18px; text-align: center;
+    }
+    .tb-badge:empty { display: none; }
+    .tb-btn.is-on {
+      background: #f7e7c3; border-color: #c9a227; color: #3b2d09;
+      box-shadow: inset 0 0 0 1px rgba(201, 162, 39, 0.28);
+    }
+    .tb-btn.is-on .tb-badge { background: #fff6df; color: #4a3a12; }
+    .tb-sel { display: inline-flex; align-items: center; gap: 4px; }
+    .tb-sel select {
+      font: inherit; font-size: 11.5px; color: #3a332a; max-width: 128px;
+      background: #fbf8f2; border: 1px solid #ded6c6; border-radius: 4px; padding: 2px 3px; cursor: pointer;
+    }
+    /* 参数面板: 定位与滚动都交给这个宿主, tweakpane 自己的根元素改成 static。
+       原来 .tp-dfwv 是 fixed + max-height(见上面 P2.4d 那条), 现在换成宿主承担 ——
+       同一件事只做一次, 否则两处各管一半宽度会打架。 */
+    #pane-host {
+      position: fixed; top: calc(var(--bar-h) + 8px); right: 10px; width: 306px;
+      max-height: calc(100vh - var(--bar-h) - 18px); overflow-y: auto; overscroll-behavior: contain;
+    }
+    #pane-host .tp-dfwv { position: static !important; width: auto !important; max-height: none !important; }
+     /* 小窗兜底: 顶栏宁可换成两行也要保住每个按钮都能点(栏高变了 --bar-h 跟着长, 不会盖住读数);
+        两行时先藏掉「场景/视图」两个段标题省地方。 */
+     @media (max-width: 900px) { .tb-cap { display: none; } }
   </style>
 </head>
 <body>
@@ -80,6 +159,9 @@
     <canvas id="canvas"></canvas>
     <div id="hud"></div>
     <div id="toast"></div>
+    <!-- P2.4h 分区骨架: 工具条由 ui/toolbar.js 填充, 参数面板由 ui/panel.js 搬进宿主 -->
+    <div id="toolbar"></div>
+    <div id="pane-host"></div>
   </div>
   <script type="module" src="/app.js"></script>
 </body>

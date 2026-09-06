@@ -22,28 +22,33 @@
 //     (CSS 侧修, 见 index.html 的 .tp-dfwv)。行高/列宽同时放宽一档。
 //  ⑥ 顺手: 场景那一栏四个按钮的标题原来各带一句括号说明(「跟拍一只蚁(G)」),
 //     键盘字母才是它们的主信息 ⇒ 换成「跟拍 G」。
+//  (这一条在 P2.4h 被更彻底地执行了一次: 那五个按钮整体搬出面板, 见下面 P2.4h 段。)
+//
+// P2.4h · 控件分区(用户第三次点名「不要都堆在一起」)。P2.4c/P2.4d 治的都是【面板内部】的密度,
+// 而真正的病在面板外面: 这一根垂直列表同时装着「换个场景看」的下拉、五个视图按钮、过滤框、
+// 91 行参数、还有一个叫「操作」却混着两类东西(面板动作 / 世界动作)的夹子 —— tweakpane 只给一根
+// 列表, 所以再怎么调行距都是把五种东西挤在同一格里。这一轮把不属于「参数」的东西全部搬走:
+//   · 预设下拉 + 换种子/分享/起雨/昼夜 + 跟拍/曲线/录像/详略/画质 → 顶部工具条(ui/toolbar.js)
+//   · 面板只留: 过滤框 + 11 个参数夹子 + 「面板动作」(展开全部参数 / 重置搜索计时)
+//   · 面板根元素搬进 #pane-host, 定位与滚动由宿主负责(见 index.html 的分区段)
+// 三条语义一个字没改: 按钮调的还是 app.js 里那批函数, 快捷键 G/M/V/H/Q/R/N 全部照旧。
 
 import { Pane } from 'tweakpane';
 import { SCHEMA, set, values, groupOf } from '../core/config.js';
-import { PRESETS } from '../core/presets.js';
 
 export class Panel {
   constructor(params) {
-    // params: { onChange(key,value), onShare(), onResetStats() }
+    // params: { onChange(key,value), onResetStats() } —— P2.4h 之后面板只剩这两个回调:
+    // 世界动作与视图动作都归顶部工具条(ui/toolbar.js), 面板不再持有它们的一句代码。
+    // (顺带了结一条历史: P2.4d 之前 onShare 传进来却没被存下来, 「复制分享链接」一点就抛 ——
+    //  那条哑按钮路径今天整体消失了, 而不是留一个「以防有人从面板调它」的空壳。)
     this.p = new Pane({ title: '参数', expanded: true });
     this.onChange = params.onChange || (() => {});
     this.onResetStats = params.onResetStats || (() => {});
-    // ⚠ 本轮顺手修一个哑按钮: onShare 从 app.js 传进来但【从来没被存下来】, 于是「操作 ▸ 复制分享链接」
-    // 一点就抛 this.onShare is not a function。该 bug 早于 P2.4b(HEAD 就带着), 一直没人点过这个按钮所以没暴露。
-    this.onShare = params.onShare || (() => {});
-    this.onSeed = params.onSeed || (() => {});
-    this.onStorm = params.onStorm || (() => {});
-    this.onJumpClock = params.onJumpClock || (() => {});
-    this.onPreset = params.onPreset || (() => {});
-    this.onFollow = params.onFollow || (() => {});
-    this.onGraph = params.onGraph || (() => {});
-    this.onRecord = params.onRecord || (() => {});
-    this.onHud = params.onHud || (() => {});
+    // 面板搬进宿主: #pane-host 负责 fixed 定位 + 滚动条, tweakpane 的根元素改成 static。
+    // 不用它的 container 选项: 搬一次 DOM 是确定动作, 少一个依赖版本行为的赌注。
+    const host = document.getElementById('pane-host');
+    if (host && this.p.element) host.appendChild(this.p.element);
     // 每条参数绑定的 {key, holder, binding}: syncValues() 靠它把「预设改掉的值」显示回滑杆。
     // 不做这件事的后果很具体: 加载迷宫预设(把 forageTimeout 提到 120)之后面板仍写着 30,
     // 用户会认为预设没生效而再点一次, 而真正在跑仿真的值早就被改了两次。
@@ -55,8 +60,7 @@ export class Panel {
     this._needle = '';
     this._syncing = false;
 
-    // 场景控件先建, 于是排在面板最上面: 它是「换个场景看」, 量级高于下面那一大排「调一个数」。
-    this.addSceneControls();
+    // (P2.4h) 这里原来是 addSceneControls(): 预设下拉 + 五个视图按钮, 它们搬去了工具条。
 
     const folderByGroup = {};
     this.folders = [];   // 给「展开全部/收起全部」用
@@ -96,31 +100,10 @@ export class Panel {
     this._allBtn = ops.addButton({ title: '展开全部参数' });
     this._allBtn.on('click', () => this.toggleAll());
     ops.addButton({ title: '重置搜索计时' }).on('click', () => this.onResetStats());
-    ops.addButton({ title: '生成新世界(换种子)' }).on('click', () => this.onSeed());
-    // 天气与昼夜(P2.3): 与键盘 R / N 等价的入口, 行为完全一致
-    ops.addButton({ title: '来一场雨(R)' }).on('click', () => this.onStorm());
-    ops.addButton({ title: '推时钟到对面(N)' }).on('click', () => this.onJumpClock());
-    ops.addButton({ title: '复制分享链接' }).on('click', () => this.onShare());
+    // P2.4h: 换种子/分享/起雨/昼夜 四个【世界动作】搬去工具条的场景段, 跟拍等五个【视图动作】
+    // 搬去视图段。留下的这两个是【面板自己的动作】—— 它们的对象就是这根列表, 不该去别处。
   }
 
-  // 场景预设(P2.4b) + 视图开关(P2.4c): 一个下拉 + 四个交互按钮。加载预设会重建整个世界
-  // (食源/墙/一窝蚁), 和「来一场雨」那种往当前世界上叠事件不是一个量级, 所以单独一栏。
-  addSceneControls() {
-    const scenes = this.p.addFolder({ title: '场景与视图', expanded: true });
-    this.vm = { preset: 'default' };
-    this.presetBinding = scenes.addBinding(this.vm, 'preset', {
-      label: '预设',
-      options: PRESETS.map((p) => ({ text: p.name, value: p.id })),
-    }).on('change', (ev) => this.onPreset(ev.value));
-    scenes.addButton({ title: '跟拍 G' }).on('click', () => this.onFollow());
-    scenes.addButton({ title: '曲线 M' }).on('click', () => this.onGraph());
-    scenes.addButton({ title: '录像 V' }).on('click', () => this.onRecord());
-    // HUD 详略在键盘 H 上(三档), 这里给个等价的鼠标入口: setLevel 传 undefined 即"切下一档"。
-    scenes.addButton({ title: '详略 H' }).on('click', () => this.onHud());
-    // 出画分辨率(P2.4d): 唯一砍得动 GPU 填充率的开关。默认 100%=出厂, 循环 100→75→55→100。
-    scenes.addButton({ title: '画质 Q' }).on('click', () => this.onQuality && this.onQuality());
-    this.sceneFolder = scenes;
-  }
 
   // 过滤框(P2.4d ④)。为什么是原生 <input> 而不是 tweakpane 的文本控件:
   //  ① 它不是参数 —— 绑进 config 会污染 SCHEMA/分享链接/「已偏离出厂 N 项」的计数;
@@ -157,10 +140,11 @@ export class Panel {
 
   // 应用过滤。返回命中的行数(给自检/测试用)。
   // 三条约定: 空串完全复原(连夹子的展开状态都还原成进入过滤前的样子);
-  // 「场景与视图」永远留着(它是换场景的入口, 不是参数); 「操作」在过滤时收掉(里面没有可匹配的行)。
+//  「操作」夹子在过滤时收掉(里面没有可匹配的行)。P2.4h 之后没有「场景与视图」这一栏了 ——
+//  它整个搬去了顶部工具条, 所以过滤规则也少一条特例。
   applyFilter(q) {
     const needle = (q || '').trim().toLowerCase();
-    const folders = [this.sceneFolder].concat(this.folders).concat([this.opsFolder]).filter((f) => !!f);
+    const folders = this.folders.concat([this.opsFolder]).filter((f) => !!f);
     if (needle && !this._needle) for (const f of folders) f._expBefore = f.expanded;
     this._needle = needle;
     let hits = 0;
@@ -177,9 +161,9 @@ export class Panel {
         if (f._expBefore !== undefined) { f.expanded = !!f._expBefore; f._expBefore = undefined; }
         continue;
       }
-      const keep = f === this.sceneFolder || seen.has(f);
+      const keep = seen.has(f);
       if (el) el.style.display = keep ? '' : 'none';
-      if (keep && f !== this.sceneFolder) f.expanded = true;
+      if (keep) f.expanded = true;
     }
     if (this._filterN) this._filterN.textContent = needle ? (hits + '/' + this.rows.length) : '';
     return hits;
@@ -204,12 +188,6 @@ export class Panel {
     return this._allOpen;
   }
 
-  // 让下拉显示"当前真的是哪个预设"(URL 带着 ?preset= 进来时尤其必要)。
-  // 用 vm + refresh() 而不是 binding.value =: 后者会派发 change, 于是「同步显示」变成「用户又加载了一次预设」。
-  setPreset(id) {
-    this.vm.preset = id || 'default';
-    this.presetBinding && this.presetBinding.refresh();
-  }
 
   // 把面板读回仿真真正在用的值。用 holder+refresh() 而不是 binding.value=:
   // 后者会派发 change, 于是「同步显示」会变成「用户改了一次参数」, 又触发一次 onChange→reset。
